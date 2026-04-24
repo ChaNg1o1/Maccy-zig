@@ -213,6 +213,14 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
 @property(nonatomic) int64_t rowID;
 @end
 @implementation MZRowActionButton
+- (BOOL)acceptsFirstMouse:(NSEvent *)event {
+  (void)event;
+  return YES;
+}
+
+- (BOOL)mouseDownCanMoveWindow {
+  return NO;
+}
 @end
 
 @interface MZActionStripItemView : NSView
@@ -326,6 +334,15 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
   if (target == nil || target.hidden || target.alphaValue <= 0.01) return NO;
   NSRect rect = [container convertRect:target.bounds fromView:target];
   return NSPointInRect(point, rect);
+}
+
+- (BOOL)acceptsFirstMouse:(NSEvent *)event {
+  (void)event;
+  return YES;
+}
+
+- (BOOL)mouseDownCanMoveWindow {
+  return NO;
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
@@ -681,7 +698,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
                                               defer:NO];
   self.panel.titleVisibility = NSWindowTitleHidden;
   self.panel.titlebarAppearsTransparent = YES;
-  self.panel.movableByWindowBackground = YES;
+  self.panel.movableByWindowBackground = NO;
   self.panel.hidesOnDeactivate = YES;
   self.panel.floatingPanel = NO;
   self.panel.level = NSNormalWindowLevel;
