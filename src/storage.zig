@@ -12,6 +12,14 @@ pub const BlobView = struct {
     data: []const u8,
 };
 
+pub const ContentKind = enum(c_int) {
+    text = 1,
+    link = 2,
+    image = 3,
+    file = 4,
+    other = 5,
+};
+
 pub const Db = struct {
     handle: *sqlite.sqlite3,
     const pinned_marker = "pinned";
@@ -46,6 +54,7 @@ pub const Db = struct {
             \\  first_copied_at INTEGER NOT NULL,
             \\  last_copied_at INTEGER NOT NULL,
             \\  copy_count INTEGER NOT NULL DEFAULT 1,
+            \\  content_kind INTEGER NOT NULL DEFAULT 5,
             \\  pin TEXT
             \\);
             \\CREATE TABLE IF NOT EXISTS history_contents (
@@ -57,6 +66,7 @@ pub const Db = struct {
             \\CREATE INDEX IF NOT EXISTS idx_history_items_last ON history_items(last_copied_at DESC);
             \\CREATE INDEX IF NOT EXISTS idx_history_contents_item ON history_contents(item_id);
         );
+        try self.ensureHistoryItemsContentKind();
     }
 
     pub fn exec(self: *Db, sql: [:0]const u8) !void {
@@ -67,26 +77,29 @@ pub const Db = struct {
         }
     }
 
-    pub fn upsertCapture(self: *Db, blobs: []const BlobView, hash_hex: *const [64]u8, title_buf: *const [256]u8, app: []const u8) !UpsertOutcome {
+    pub fn upsertCapture(self: *Db, blobs: []const BlobView, hash_hex: *const [64]u8, title_buf: *const [256]u8, app: []const u8, content_kind: ContentKind) !UpsertOutcome {
         const now: i64 = @intCast(c.time(null));
         if (try self.updateDuplicate(hash_hex, now)) return .duplicate;
 
         try self.exec("BEGIN IMMEDIATE;");
         errdefer self.exec("ROLLBACK;") catch {};
 
-        const stmt = try self.prepare("INSERT INTO history_items(hash,title,app,first_copied_at,last_copied_at,copy_count) VALUES(?1,?2,?3,?4,?5,1);");
+        const stmt = try self.prepare("INSERT INTO history_items(hash,title,app,first_copied_at,last_copied_at,copy_count,content_kind) VALUES(?1,?2,?3,?4,?5,1,?6);");
         defer _ = sqlite.sqlite3_finalize(stmt);
         try bindText(stmt, 1, hash_hex[0..]);
         try bindText(stmt, 2, std.mem.sliceTo(title_buf, 0));
         try bindText(stmt, 3, app);
         _ = sqlite.sqlite3_bind_int64(stmt, 4, now);
         _ = sqlite.sqlite3_bind_int64(stmt, 5, now);
+        _ = sqlite.sqlite3_bind_int(stmt, 6, @intFromEnum(content_kind));
         try stepDone(stmt);
 
         const item_id = sqlite.sqlite3_last_insert_rowid(self.handle);
+        const cstmt = try self.prepare("INSERT INTO history_contents(item_id,type,value) VALUES(?1,?2,?3);");
+        defer _ = sqlite.sqlite3_finalize(cstmt);
         for (blobs) |blob| {
-            const cstmt = try self.prepare("INSERT INTO history_contents(item_id,type,value) VALUES(?1,?2,?3);");
-            defer _ = sqlite.sqlite3_finalize(cstmt);
+            _ = sqlite.sqlite3_reset(cstmt);
+            _ = sqlite.sqlite3_clear_bindings(cstmt);
             _ = sqlite.sqlite3_bind_int64(cstmt, 1, item_id);
             try bindText(cstmt, 2, blob.ty);
             try bindBlob(cstmt, 3, blob.data);
@@ -96,10 +109,10 @@ pub const Db = struct {
         return .inserted;
     }
 
-    pub fn insertImported(self: *Db, blobs: []const BlobView, hash_hex: *const [64]u8, title: []const u8, app: []const u8, pin: []const u8, first_ts: i64, last_ts: i64, copy_count: i64) !bool {
+    pub fn insertImported(self: *Db, blobs: []const BlobView, hash_hex: *const [64]u8, title: []const u8, app: []const u8, pin: []const u8, first_ts: i64, last_ts: i64, copy_count: i64, content_kind: ContentKind) !bool {
         try self.exec("BEGIN IMMEDIATE;");
         errdefer self.exec("ROLLBACK;") catch {};
-        const stmt = try self.prepare("INSERT OR IGNORE INTO history_items(hash,title,app,first_copied_at,last_copied_at,copy_count,pin) VALUES(?1,?2,?3,?4,?5,?6,NULLIF(?7,''));");
+        const stmt = try self.prepare("INSERT OR IGNORE INTO history_items(hash,title,app,first_copied_at,last_copied_at,copy_count,pin,content_kind) VALUES(?1,?2,?3,?4,?5,?6,NULLIF(?7,''),?8);");
         defer _ = sqlite.sqlite3_finalize(stmt);
         try bindText(stmt, 1, hash_hex[0..]);
         try bindText(stmt, 2, title);
@@ -108,15 +121,18 @@ pub const Db = struct {
         _ = sqlite.sqlite3_bind_int64(stmt, 5, last_ts);
         _ = sqlite.sqlite3_bind_int64(stmt, 6, if (copy_count <= 0) 1 else copy_count);
         try bindText(stmt, 7, pin);
+        _ = sqlite.sqlite3_bind_int(stmt, 8, @intFromEnum(content_kind));
         try stepDone(stmt);
         if (sqlite.sqlite3_changes(self.handle) == 0) {
             try self.exec("COMMIT;");
             return false;
         }
         const item_id = sqlite.sqlite3_last_insert_rowid(self.handle);
+        const cstmt = try self.prepare("INSERT INTO history_contents(item_id,type,value) VALUES(?1,?2,?3);");
+        defer _ = sqlite.sqlite3_finalize(cstmt);
         for (blobs) |blob| {
-            const cstmt = try self.prepare("INSERT INTO history_contents(item_id,type,value) VALUES(?1,?2,?3);");
-            defer _ = sqlite.sqlite3_finalize(cstmt);
+            _ = sqlite.sqlite3_reset(cstmt);
+            _ = sqlite.sqlite3_clear_bindings(cstmt);
             _ = sqlite.sqlite3_bind_int64(cstmt, 1, item_id);
             try bindText(cstmt, 2, blob.ty);
             try bindBlob(cstmt, 3, blob.data);
@@ -233,7 +249,80 @@ pub const Db = struct {
         if (sqlite.sqlite3_prepare_v2(self.handle, sql.ptr, -1, &stmt, null) != sqlite.SQLITE_OK) return error.SqlitePrepareFailed;
         return stmt.?;
     }
+
+    fn ensureHistoryItemsContentKind(self: *Db) !void {
+        if (try self.tableHasColumn("history_items", "content_kind")) return;
+        try self.exec("ALTER TABLE history_items ADD COLUMN content_kind INTEGER NOT NULL DEFAULT 5;");
+        try self.backfillHistoryItemsContentKind();
+    }
+
+    fn tableHasColumn(self: *Db, table_name: []const u8, column_name: []const u8) !bool {
+        var sql_buf: [128]u8 = undefined;
+        const sql = try std.fmt.bufPrintZ(&sql_buf, "PRAGMA table_info({s});", .{table_name});
+        const stmt = try self.prepare(sql);
+        defer _ = sqlite.sqlite3_finalize(stmt);
+        while (sqlite.sqlite3_step(stmt) == sqlite.SQLITE_ROW) {
+            const name = sqlite.sqlite3_column_text(stmt, 1) orelse continue;
+            if (std.mem.eql(u8, std.mem.span(name), column_name)) return true;
+        }
+        return false;
+    }
+
+    fn backfillHistoryItemsContentKind(self: *Db) !void {
+        try self.exec(
+            \\UPDATE history_items
+            \\SET content_kind = CASE
+            \\  WHEN EXISTS(
+            \\    SELECT 1 FROM history_contents c
+            \\    WHERE c.item_id=history_items.id
+            \\      AND (c.type LIKE '%png%' OR c.type LIKE '%tiff%' OR c.type LIKE '%jpeg%' OR c.type LIKE '%heic%')
+            \\  ) THEN 3
+            \\  WHEN EXISTS(
+            \\    SELECT 1 FROM history_contents c
+            \\    WHERE c.item_id=history_items.id AND c.type='public.file-url'
+            \\  ) THEN 4
+            \\  WHEN title LIKE 'http://%' OR title LIKE 'https://%' OR EXISTS(
+            \\    SELECT 1 FROM history_contents c
+            \\    WHERE c.item_id=history_items.id AND (c.type LIKE '%url%' OR c.type LIKE '%html%')
+            \\  ) THEN 2
+            \\  WHEN EXISTS(
+            \\    SELECT 1 FROM history_contents c
+            \\    WHERE c.item_id=history_items.id AND (c.type='public.utf8-plain-text' OR c.type LIKE '%rtf%' OR c.type LIKE '%text%')
+            \\  ) THEN 1
+            \\  ELSE 5
+            \\END;
+        );
+    }
 };
+
+pub fn classifyContentKind(blobs: []const BlobView, title: []const u8) ContentKind {
+    var saw_file = false;
+    var saw_link = startsWithHttpScheme(title);
+    var saw_text = false;
+
+    for (blobs) |blob| {
+        if (isImageType(blob.ty)) return .image;
+        if (std.mem.eql(u8, blob.ty, "public.file-url")) saw_file = true;
+        if (std.mem.indexOf(u8, blob.ty, "url") != null or std.mem.indexOf(u8, blob.ty, "html") != null) saw_link = true;
+        if (std.mem.eql(u8, blob.ty, "public.utf8-plain-text") or std.mem.indexOf(u8, blob.ty, "rtf") != null or std.mem.indexOf(u8, blob.ty, "text") != null) saw_text = true;
+    }
+
+    if (saw_file) return .file;
+    if (saw_link) return .link;
+    if (saw_text) return .text;
+    return .other;
+}
+
+fn startsWithHttpScheme(title: []const u8) bool {
+    return std.mem.startsWith(u8, title, "http://") or std.mem.startsWith(u8, title, "https://");
+}
+
+fn isImageType(ty: []const u8) bool {
+    return std.mem.indexOf(u8, ty, "png") != null or
+        std.mem.indexOf(u8, ty, "tiff") != null or
+        std.mem.indexOf(u8, ty, "jpeg") != null or
+        std.mem.indexOf(u8, ty, "heic") != null;
+}
 
 pub fn bindText(stmt: *sqlite.sqlite3_stmt, idx: c_int, value: []const u8) !void {
     if (sqlite.sqlite3_bind_text(stmt, idx, value.ptr, @intCast(value.len), null) != sqlite.SQLITE_OK) return error.SqliteBindFailed;
@@ -275,7 +364,7 @@ test "togglePin stores stable marker and null" {
 
     const blobs = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = "hello" }};
     const hash = [_]u8{'a'} ** 64;
-    try std.testing.expect(try db.insertImported(&blobs, &hash, "title", "app", "", 1, 1, 1));
+    try std.testing.expect(try db.insertImported(&blobs, &hash, "title", "app", "", 1, 1, 1, .text));
 
     const item_id = sqlite.sqlite3_last_insert_rowid(db.handle);
     try std.testing.expectEqual(@as(i64, 1), item_id);
@@ -296,4 +385,22 @@ test "togglePin returns false for missing row" {
     try db.migrate();
 
     try std.testing.expect(!(try db.togglePin(99)));
+}
+
+test "classifyContentKind uses the same priority as the app query" {
+    const image = [_]BlobView{.{ .ty = "public.png", .data = "img" }};
+    try std.testing.expectEqual(ContentKind.image, classifyContentKind(&image, "note"));
+
+    const file = [_]BlobView{.{ .ty = "public.file-url", .data = "file:///tmp/a" }};
+    try std.testing.expectEqual(ContentKind.file, classifyContentKind(&file, "note"));
+
+    const link = [_]BlobView{.{ .ty = "public.html", .data = "<a href='x'>x</a>" }};
+    try std.testing.expectEqual(ContentKind.link, classifyContentKind(&link, "note"));
+    try std.testing.expectEqual(ContentKind.link, classifyContentKind(&[_]BlobView{}, "https://example.com"));
+
+    const text = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = "hello" }};
+    try std.testing.expectEqual(ContentKind.text, classifyContentKind(&text, "hello"));
+
+    const other = [_]BlobView{.{ .ty = "com.example.binary", .data = "\x00\x01" }};
+    try std.testing.expectEqual(ContentKind.other, classifyContentKind(&other, "blob"));
 }

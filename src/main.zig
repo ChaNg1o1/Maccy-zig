@@ -262,7 +262,7 @@ fn cmdBench(allocator: std.mem.Allocator, cfg: Config) !void {
         var title: [256]u8 = [_]u8{0} ** 256;
         const label = try std.fmt.bufPrint(title[0..], "bench {d} bytes", .{size});
         if (label.len < title.len) title[label.len] = 0;
-        _ = try db.upsertCapture(&blob, &hash, &title, "bench");
+        _ = try db.upsertCapture(&blob, &hash, &title, "bench", .text);
     }
     try db.prune(cfg.max_items);
     std.debug.print("bench complete db={s}\n", .{cfg.db_path});
@@ -438,54 +438,18 @@ fn appRefreshRows() !void {
         \\       title,
         \\       COALESCE(app, ''),
         \\       CASE
-        \\         WHEN EXISTS(
-        \\           SELECT 1 FROM history_contents c
-        \\           WHERE c.item_id=history_items.id
-        \\             AND (c.type LIKE '%png%' OR c.type LIKE '%tiff%' OR c.type LIKE '%jpeg%' OR c.type LIKE '%heic%')
-        \\         ) THEN 'Copied as Image'
-        \\         WHEN EXISTS(
-        \\           SELECT 1 FROM history_contents c
-        \\           WHERE c.item_id=history_items.id AND c.type='public.file-url'
-        \\         ) THEN 'Copied as File'
+        \\         WHEN content_kind=?2 THEN 'Copied as Image'
+        \\         WHEN content_kind=?3 THEN 'Copied as File'
         \\         WHEN COALESCE(app, '') <> '' THEN app
-        \\         WHEN title LIKE 'http://%' OR title LIKE 'https://%' OR EXISTS(
-        \\           SELECT 1 FROM history_contents c
-        \\           WHERE c.item_id=history_items.id AND (c.type LIKE '%url%' OR c.type LIKE '%html%')
-        \\         ) THEN 'Copied as Link'
-        \\         WHEN EXISTS(
-        \\           SELECT 1 FROM history_contents c
-        \\           WHERE c.item_id=history_items.id AND (c.type='public.utf8-plain-text' OR c.type LIKE '%rtf%' OR c.type LIKE '%text%')
-        \\         ) THEN 'Copied as Plain Text'
+        \\         WHEN content_kind=?4 THEN 'Copied as Link'
+        \\         WHEN content_kind=?5 THEN 'Copied as Plain Text'
         \\         ELSE 'Copied Data'
         \\       END AS subtitle,
         \\       pin IS NOT NULL AS is_pinned,
         \\       copy_count,
         \\       last_copied_at,
-        \\       EXISTS(
-        \\         SELECT 1 FROM history_contents c
-        \\         WHERE c.item_id=history_items.id
-        \\           AND (c.type LIKE '%png%' OR c.type LIKE '%tiff%' OR c.type LIKE '%jpeg%' OR c.type LIKE '%heic%')
-        \\       ) AS has_image,
-        \\       CASE
-        \\         WHEN EXISTS(
-        \\           SELECT 1 FROM history_contents c
-        \\           WHERE c.item_id=history_items.id
-        \\             AND (c.type LIKE '%png%' OR c.type LIKE '%tiff%' OR c.type LIKE '%jpeg%' OR c.type LIKE '%heic%')
-        \\         ) THEN ?2
-        \\         WHEN EXISTS(
-        \\           SELECT 1 FROM history_contents c
-        \\           WHERE c.item_id=history_items.id AND c.type='public.file-url'
-        \\         ) THEN ?3
-        \\         WHEN title LIKE 'http://%' OR title LIKE 'https://%' OR EXISTS(
-        \\           SELECT 1 FROM history_contents c
-        \\           WHERE c.item_id=history_items.id AND (c.type LIKE '%url%' OR c.type LIKE '%html%')
-        \\         ) THEN ?4
-        \\         WHEN EXISTS(
-        \\           SELECT 1 FROM history_contents c
-        \\           WHERE c.item_id=history_items.id AND (c.type='public.utf8-plain-text' OR c.type LIKE '%rtf%' OR c.type LIKE '%text%')
-        \\         ) THEN ?5
-        \\         ELSE ?6
-        \\       END AS content_kind
+        \\       content_kind=?2 AS has_image,
+        \\       content_kind
         \\FROM history_items
         \\WHERE (?1 = '' OR title LIKE '%' || ?1 || '%' OR app LIKE '%' || ?1 || '%')
         \\ORDER BY (pin IS NULL), last_copied_at DESC
@@ -602,6 +566,7 @@ fn importMaccyDb(source: *Db, dest: *Db, max_blob_bytes: usize) !ImportStats {
             sqlite.sqlite3_column_int64(item_stmt, 5),
             sqlite.sqlite3_column_int64(item_stmt, 6),
             sqlite.sqlite3_column_int64(item_stmt, 4),
+            storage.classifyContentKind(blobs.items, std.mem.span(title_txt)),
         );
         if (inserted) {
             stats.items += 1;

@@ -119,8 +119,10 @@ fn persistSnapshot(allocator: std.mem.Allocator, db: *storage.Db, snap: *const c
 
     const hash_hex = computeHashHex(views[0..valid]);
     const title_buf = titleFromBlobs(views[0..valid]);
+    const title = std.mem.sliceTo(title_buf[0..], 0);
+    const content_kind = storage.classifyContentKind(views[0..valid], title);
     const app = if (snap.source_bundle != null) std.mem.span(snap.source_bundle) else "";
-    return switch (try db.upsertCapture(views[0..valid], &hash_hex, &title_buf, app)) {
+    return switch (try db.upsertCapture(views[0..valid], &hash_hex, &title_buf, app, content_kind)) {
         .inserted => .inserted,
         .duplicate => .duplicate,
     };
