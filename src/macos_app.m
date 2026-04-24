@@ -410,7 +410,7 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
     self.previewPopover.animates = YES;
   }
   self.previewPopover.contentViewController = controller;
-  [self.previewPopover showRelativeToRect:self.iconBackdrop.bounds ofView:self.iconBackdrop preferredEdge:NSRectEdgeMaxX];
+  [self.previewPopover showRelativeToRect:self.rowContainer.bounds ofView:self.rowContainer preferredEdge:NSRectEdgeMaxX];
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
@@ -521,7 +521,7 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
   }
   if (!self.previewEnabled) return;
   self.previewTrackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds
-                                                          options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
+                                                          options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
                                                             owner:self
                                                          userInfo:nil];
   [self addTrackingArea:self.previewTrackingArea];
@@ -546,6 +546,11 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
 }
 
 - (void)mouseEntered:(NSEvent *)event {
+  (void)event;
+  [self showImagePreviewIfNeeded];
+}
+
+- (void)mouseMoved:(NSEvent *)event {
   (void)event;
   [self showImagePreviewIfNeeded];
 }
@@ -817,6 +822,8 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   const CGFloat panelWidth = 561.0;
   const CGFloat panelHeight = 701.0;
   const CGFloat outerMargin = 25.0;
+  const CGFloat contentInset = 16.0;
+  const CGFloat contentTextX = 84.0;
   const CGFloat chromeTop = 42.0;
   const CGFloat searchHeight = 47.0;
   const CGFloat tabsHeight = 42.0;
@@ -894,7 +901,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   searchIcon.contentTintColor = mz_text_primary();
   [searchBox addSubview:searchIcon];
 
-  self.searchField = [[NSTextField alloc] initWithFrame:NSMakeRect(61, 8, searchBox.bounds.size.width - 148, 32)];
+  self.searchField = [[NSTextField alloc] initWithFrame:NSMakeRect(contentTextX, 8, searchBox.bounds.size.width - contentTextX - 87, 32)];
   self.searchField.delegate = self;
   self.searchField.placeholderString = @"Search clipboard history...";
   self.searchField.font = [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold];
@@ -988,20 +995,22 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   self.listContentView.autoresizingMask = NSViewWidthSizable;
   self.listScrollView.documentView = self.listContentView;
 
-  NSImageView *countIcon = [[NSImageView alloc] initWithFrame:NSMakeRect(25, 27, 18, 18)];
+  NSImageView *countIcon = [[NSImageView alloc] initWithFrame:NSMakeRect(outerMargin + contentInset, 27, 18, 18)];
   countIcon.image = mz_symbol_image(@"checkmark.circle", 16.0);
   countIcon.contentTintColor = mz_primary_orange_shadow();
   [self.rootView addSubview:countIcon];
 
   self.countLabel = mz_label(@"0 items", [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold], mz_text_secondary());
-  self.countLabel.frame = NSMakeRect(53, 22, 120, 28);
+  self.countLabel.frame = NSMakeRect(outerMargin + contentInset + 28, 22, 120, 28);
   [self.rootView addSubview:self.countLabel];
 
-  self.clearButton = [self footerTextButtonWithTitle:@"Clear History..." action:@selector(showClearHistoryMenu:)];
-  self.clearButton.frame = NSMakeRect((frame.size.width - 140) * 0.5, 19, 140, 32);
+  const CGFloat clearGroupWidth = 108.0 + 15.0 + 48.0;
+  const CGFloat clearGroupX = floor((frame.size.width - clearGroupWidth) * 0.5);
+  self.clearButton = [self footerTextButtonWithTitle:@"Clear All" action:@selector(clearAll:)];
+  self.clearButton.frame = NSMakeRect(clearGroupX, 19, 108, 32);
   [self.rootView addSubview:self.clearButton];
 
-  NSView *clearHint = [[NSView alloc] initWithFrame:NSMakeRect(self.clearButton.frame.origin.x + 155, 20, 48, 29)];
+  NSView *clearHint = [[NSView alloc] initWithFrame:NSMakeRect(clearGroupX + 123.0, 20, 48, 29)];
   clearHint.wantsLayer = YES;
   clearHint.layer.cornerRadius = 5.0;
   clearHint.layer.borderWidth = 1.0;
@@ -1013,21 +1022,6 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   clearHintLabel.frame = NSMakeRect(0, 5, 48, 18);
   clearHintLabel.alignment = NSTextAlignmentCenter;
   [clearHint addSubview:clearHintLabel];
-
-  NSButton *plusButton = [[NSButton alloc] initWithFrame:NSMakeRect(frame.size.width - 73, 17, 50, 34)];
-  plusButton.title = @"";
-  plusButton.bordered = NO;
-  plusButton.wantsLayer = YES;
-  plusButton.layer.cornerRadius = 6.0;
-  plusButton.layer.backgroundColor = mz_card_fill().CGColor;
-  plusButton.layer.borderWidth = 1.0;
-  plusButton.layer.borderColor = mz_primary_orange().CGColor;
-  plusButton.image = mz_symbol_image(@"plus", 23.0);
-  plusButton.contentTintColor = NSColor.whiteColor;
-  plusButton.focusRingType = NSFocusRingTypeNone;
-  plusButton.target = self;
-  plusButton.action = @selector(showHeaderMenu:);
-  [self.rootView addSubview:plusButton];
 
   self.actionsMenu = [[NSMenu alloc] initWithTitle:@"Actions"];
   NSArray<NSDictionary *> *menu_specs = @[
@@ -1384,11 +1378,6 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   [self showMenuFromView:sender];
 }
 
-- (void)showClearHistoryMenu:(id)sender {
-  (void)sender;
-  [self showMenuFromView:self.clearButton ?: self.settingsButton];
-}
-
 - (void)showRowMenuFromButton:(MZRowActionButton *)sender {
   [self selectRowID:sender.rowID];
   [self showMenuFromView:sender];
@@ -1480,7 +1469,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     return YES;
   }
   if (hasCommand && mz_app_matches_command_key(event, 40, @"k")) {
-    [self showClearHistoryMenu:nil];
+    [self clearAll:nil];
     return YES;
   }
   if (hasCommand && mz_app_matches_command_key(event, 9, @"v")) {
