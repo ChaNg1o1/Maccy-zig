@@ -593,13 +593,28 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 
     MZClipboardCellView *rowView = (MZClipboardCellView *)subview;
     NSPoint rowPoint = [rowView convertPoint:event.locationInWindow fromView:nil];
-    if (mz_point_hits_view(rowView, rowView.favoriteButton, rowPoint)) return NO;
+    if (mz_point_hits_view(rowView, rowView.favoriteButton, rowPoint)) {
+      [rowView.favoriteButton performClick:nil];
+      return YES;
+    }
 
     if (rowView.actionBar != nil && !rowView.actionBar.hidden) {
-      if (mz_point_hits_view(rowView, rowView.pasteActionView.button, rowPoint)) return NO;
-      if (mz_point_hits_view(rowView, rowView.duplicateActionView.button, rowPoint)) return NO;
-      if (mz_point_hits_view(rowView, rowView.revealActionView.button, rowPoint)) return NO;
-      if (mz_point_hits_view(rowView, rowView.moreActionView.button, rowPoint)) return NO;
+      if (mz_point_hits_view(rowView, rowView.pasteActionView.button, rowPoint)) {
+        [rowView.pasteActionView.button performClick:nil];
+        return YES;
+      }
+      if (mz_point_hits_view(rowView, rowView.duplicateActionView.button, rowPoint)) {
+        [rowView.duplicateActionView.button performClick:nil];
+        return YES;
+      }
+      if (mz_point_hits_view(rowView, rowView.revealActionView.button, rowPoint)) {
+        [rowView.revealActionView.button performClick:nil];
+        return YES;
+      }
+      if (mz_point_hits_view(rowView, rowView.moreActionView.button, rowPoint)) {
+        [rowView.moreActionView.button performClick:nil];
+        return YES;
+      }
     }
 
     if ([target respondsToSelector:@selector(selectRowForItemView:)]) {
