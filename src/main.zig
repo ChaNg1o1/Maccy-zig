@@ -232,18 +232,27 @@ fn printRows(handle: *sqlite.sqlite3, sql: [:0]const u8) !void {
     var stmt: ?*sqlite.sqlite3_stmt = null;
     if (sqlite.sqlite3_prepare_v2(handle, sql.ptr, -1, &stmt, null) != sqlite.SQLITE_OK) return error.SqlitePrepareFailed;
     defer _ = sqlite.sqlite3_finalize(stmt.?);
+    var stderr_buffer: [4096]u8 = undefined;
+    const stderr = std.debug.lockStderr(&stderr_buffer);
+    defer std.debug.unlockStderr();
+    const writer = &stderr.file_writer.interface;
     const cols = sqlite.sqlite3_column_count(stmt.?);
     while (sqlite.sqlite3_step(stmt.?) == sqlite.SQLITE_ROW) {
         var i: c_int = 0;
         while (i < cols) : (i += 1) {
             const name = sqlite.sqlite3_column_name(stmt.?, i);
             const txt = sqlite.sqlite3_column_text(stmt.?, i);
-            std.debug.print("{s}=", .{std.mem.span(name)});
-            if (txt != null) std.debug.print("{s}", .{std.mem.span(txt)}) else std.debug.print("NULL", .{});
-            if (i + 1 < cols) std.debug.print("\t", .{});
+            try writer.print("{s}=", .{std.mem.span(name)});
+            if (txt != null) {
+                try writer.print("{s}", .{std.mem.span(txt)});
+            } else {
+                try writer.writeAll("NULL");
+            }
+            if (i + 1 < cols) try writer.writeByte('\t');
         }
-        std.debug.print("\n", .{});
+        try writer.writeByte('\n');
     }
+    try writer.flush();
 }
 
 fn cmdBench(allocator: std.mem.Allocator, cfg: Config) !void {
