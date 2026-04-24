@@ -37,6 +37,12 @@ static BOOL mz_app_is_enter_event(NSEvent *event) {
   return event.keyCode == 36 || event.keyCode == 76;
 }
 
+static BOOL mz_app_matches_command_key(NSEvent *event, unsigned short keyCode, NSString *fallback) {
+  if (event.keyCode == keyCode) return YES;
+  NSString *characters = event.charactersIgnoringModifiers.lowercaseString ?: @"";
+  return [characters isEqualToString:(fallback ?: @"")];
+}
+
 static NSTextField *mz_label(NSString *text, NSFont *font, NSColor *color) {
   NSTextField *label = [NSTextField labelWithString:text ?: @""];
   label.font = font;
@@ -709,6 +715,7 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSImage *> *iconCache;
 @property(nonatomic, strong) NSMutableArray<NSButton *> *filterButtons;
 @property(nonatomic, strong) NSTextField *countLabel;
+@property(nonatomic, strong) NSButton *clearButton;
 @property(nonatomic, strong) NSButton *pinButton;
 @property(nonatomic, strong) NSButton *settingsButton;
 @property(nonatomic, strong) id keyEventMonitor;
@@ -990,11 +997,11 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   self.countLabel.frame = NSMakeRect(53, 22, 120, 28);
   [self.rootView addSubview:self.countLabel];
 
-  NSButton *clearButton = [self footerTextButtonWithTitle:@"Clear History..." action:@selector(showHeaderMenu:)];
-  clearButton.frame = NSMakeRect((frame.size.width - 140) * 0.5, 19, 140, 32);
-  [self.rootView addSubview:clearButton];
+  self.clearButton = [self footerTextButtonWithTitle:@"Clear History..." action:@selector(showClearHistoryMenu:)];
+  self.clearButton.frame = NSMakeRect((frame.size.width - 140) * 0.5, 19, 140, 32);
+  [self.rootView addSubview:self.clearButton];
 
-  NSView *clearHint = [[NSView alloc] initWithFrame:NSMakeRect(clearButton.frame.origin.x + 155, 20, 48, 29)];
+  NSView *clearHint = [[NSView alloc] initWithFrame:NSMakeRect(self.clearButton.frame.origin.x + 155, 20, 48, 29)];
   clearHint.wantsLayer = YES;
   clearHint.layer.cornerRadius = 5.0;
   clearHint.layer.borderWidth = 1.0;
@@ -1118,7 +1125,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   if (self.rows.count > 0 && self.selectedRowIndex < 0) {
     [self selectRowAtIndex:0 focusList:NO];
   }
-  [self.searchField becomeFirstResponder];
+  [self focusSearchFieldSelectingText:NO];
   if (self.callbacks.on_toggle) {
     dispatch_async(dispatch_get_main_queue(), ^{
       if (self.callbacks.on_toggle) self.callbacks.on_toggle();
@@ -1367,8 +1374,19 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   [self.actionsMenu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, NSHeight(view.bounds)) inView:view];
 }
 
+- (void)focusSearchFieldSelectingText:(BOOL)selectAll {
+  if (self.searchField == nil) return;
+  [self.panel makeFirstResponder:self.searchField];
+  if (selectAll) [self.searchField selectText:nil];
+}
+
 - (void)showHeaderMenu:(id)sender {
   [self showMenuFromView:sender];
+}
+
+- (void)showClearHistoryMenu:(id)sender {
+  (void)sender;
+  [self showMenuFromView:self.clearButton ?: self.settingsButton];
 }
 
 - (void)showRowMenuFromButton:(MZRowActionButton *)sender {
@@ -1451,30 +1469,28 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   BOOL hasCommand = (modifiers & NSEventModifierFlagCommand) != 0;
   BOOL hasOption = (modifiers & NSEventModifierFlagOption) != 0;
   BOOL hasShift = (modifiers & NSEventModifierFlagShift) != 0;
-  NSString *characters = event.charactersIgnoringModifiers.lowercaseString ?: @"";
 
   if (event.keyCode == 53) {
     [self hide];
     return YES;
   }
 
-  if (hasCommand && [characters isEqualToString:@"f"]) {
-    [self.searchField becomeFirstResponder];
+  if (hasCommand && mz_app_matches_command_key(event, 3, @"f")) {
+    [self focusSearchFieldSelectingText:YES];
     return YES;
   }
-  if (hasCommand && [characters isEqualToString:@"k"]) {
-    [self clearSearch:nil];
-    [self.searchField becomeFirstResponder];
+  if (hasCommand && mz_app_matches_command_key(event, 40, @"k")) {
+    [self showClearHistoryMenu:nil];
     return YES;
   }
-  if (hasCommand && [characters isEqualToString:@"v"]) {
+  if (hasCommand && mz_app_matches_command_key(event, 9, @"v")) {
     if (hasOption) return [self performSelectedAction:MZ_APP_ACTION_PASTE_PLAIN hidesPanel:YES];
     return [self performSelectedAction:MZ_APP_ACTION_PASTE hidesPanel:YES];
   }
-  if (hasCommand && [characters isEqualToString:@"p"]) {
+  if (hasCommand && mz_app_matches_command_key(event, 35, @"p")) {
     return [self performSelectedAction:MZ_APP_ACTION_TOGGLE_PIN hidesPanel:NO];
   }
-  if (hasCommand && [characters isEqualToString:@"r"]) {
+  if (hasCommand && mz_app_matches_command_key(event, 15, @"r")) {
     return [self performSelectedAction:MZ_APP_ACTION_REVEAL hidesPanel:NO];
   }
 
