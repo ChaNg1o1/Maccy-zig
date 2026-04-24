@@ -200,6 +200,7 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
 @property(nonatomic, copy) NSString *subtitle;
 @property(nonatomic, copy) NSString *app;
 @property(nonatomic) int64_t copiedAt;
+@property(nonatomic) int64_t pinOrder;
 @property(nonatomic) NSInteger contentKind;
 @property(nonatomic) BOOL pinned;
 @property(nonatomic) BOOL hasImage;
@@ -986,6 +987,9 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 
 - (BOOL)performRowAction:(MZAppAction)action rowID:(int64_t)rowID hidesPanel:(BOOL)hidesPanel {
   if (rowID == 0) return NO;
+  if (action == MZ_APP_ACTION_TOGGLE_PIN) {
+    [self optimisticallyTogglePinForRowID:rowID];
+  }
   if (hidesPanel) [self hide];
   mz_app_dispatch_action(self, action, rowID);
   return YES;
@@ -1152,6 +1156,38 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 - (void)updateCountLabel {
   NSUInteger count = self.rows.count;
   self.countLabel.stringValue = [NSString stringWithFormat:@"%lu %@", (unsigned long)count, count == 1 ? @"item" : @"items"];
+}
+
+- (NSComparisonResult)compareRow:(MZRow *)lhs withRow:(MZRow *)rhs {
+  if (lhs.pinned != rhs.pinned) return lhs.pinned ? NSOrderedAscending : NSOrderedDescending;
+  if (lhs.pinOrder != rhs.pinOrder) return lhs.pinOrder > rhs.pinOrder ? NSOrderedAscending : NSOrderedDescending;
+  if (lhs.copiedAt != rhs.copiedAt) return lhs.copiedAt > rhs.copiedAt ? NSOrderedAscending : NSOrderedDescending;
+  if (lhs.rowID != rhs.rowID) return lhs.rowID > rhs.rowID ? NSOrderedAscending : NSOrderedDescending;
+  return NSOrderedSame;
+}
+
+- (void)optimisticallyTogglePinForRowID:(int64_t)rowID {
+  NSInteger index = [self indexOfRowID:rowID inRows:self.allRows];
+  if (index == NSNotFound) return;
+
+  MZRow *row = self.allRows[(NSUInteger)index];
+  if (row.pinned) {
+    row.pinned = NO;
+    row.pinOrder = 0;
+  } else {
+    row.pinned = YES;
+    int64_t maxPinOrder = 0;
+    for (MZRow *candidate in self.allRows) {
+      if (candidate.pinOrder > maxPinOrder) maxPinOrder = candidate.pinOrder;
+    }
+    row.pinOrder = maxPinOrder + 1;
+  }
+
+  [self.allRows sortUsingComparator:^NSComparisonResult(MZRow *lhs, MZRow *rhs) {
+    return [self compareRow:lhs withRow:rhs];
+  }];
+
+  [self applyCurrentFilterPreservingSelection:rowID];
 }
 
 - (void)changeFilter:(NSButton *)sender {
@@ -1450,6 +1486,7 @@ void mz_app_set_rows(const MZAppRow *rows, size_t count) {
     row.subtitle = rows[i].subtitle ? [NSString stringWithUTF8String:rows[i].subtitle] : @"";
     row.app = rows[i].app ? [NSString stringWithUTF8String:rows[i].app] : @"";
     row.copiedAt = rows[i].copied_at;
+    row.pinOrder = rows[i].pin_order;
     row.contentKind = rows[i].content_kind;
     row.pinned = rows[i].pinned != 0;
     row.hasImage = rows[i].has_image != 0;

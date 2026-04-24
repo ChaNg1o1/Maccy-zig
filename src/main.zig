@@ -457,11 +457,12 @@ fn appRefreshRows() !void {
         \\       pin IS NOT NULL AS is_pinned,
         \\       copy_count,
         \\       last_copied_at,
+        \\       COALESCE(pin_order, 0) AS pin_order,
         \\       content_kind=?2 AS has_image,
         \\       content_kind
         \\FROM history_items
         \\WHERE (?1 = '' OR title LIKE '%' || ?1 || '%' OR app LIKE '%' || ?1 || '%')
-        \\ORDER BY (pin IS NULL), last_copied_at DESC
+        \\ORDER BY (pin IS NULL), pin_order DESC, last_copied_at DESC
         \\LIMIT 200;
     ;
     const stmt = try db.prepare(sql);
@@ -488,9 +489,10 @@ fn appRefreshRows() !void {
             .subtitle = subtitle_z.ptr,
             .app = app_z.ptr,
             .copied_at = sqlite.sqlite3_column_int64(stmt, 6),
-            .content_kind = sqlite.sqlite3_column_int(stmt, 8),
+            .pin_order = sqlite.sqlite3_column_int64(stmt, 7),
+            .content_kind = sqlite.sqlite3_column_int(stmt, 9),
             .pinned = sqlite.sqlite3_column_int(stmt, 4),
-            .has_image = sqlite.sqlite3_column_int(stmt, 7),
+            .has_image = sqlite.sqlite3_column_int(stmt, 8),
             .copy_count = sqlite.sqlite3_column_int(stmt, 5),
         });
     }

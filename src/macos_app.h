@@ -12,6 +12,7 @@ typedef struct MZAppRow {
   const char *subtitle;
   const char *app;
   int64_t copied_at;
+  int64_t pin_order;
   int content_kind;
   int pinned;
   int has_image;

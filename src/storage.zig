@@ -55,6 +55,7 @@ pub const Db = struct {
             \\  last_copied_at INTEGER NOT NULL,
             \\  copy_count INTEGER NOT NULL DEFAULT 1,
             \\  content_kind INTEGER NOT NULL DEFAULT 5,
+            \\  pin_order INTEGER,
             \\  pin TEXT
             \\);
             \\CREATE TABLE IF NOT EXISTS history_contents (
@@ -67,6 +68,7 @@ pub const Db = struct {
             \\CREATE INDEX IF NOT EXISTS idx_history_contents_item ON history_contents(item_id);
         );
         try self.ensureHistoryItemsContentKind();
+        try self.ensureHistoryItemsPinOrder();
     }
 
     pub fn exec(self: *Db, sql: [:0]const u8) !void {
@@ -112,7 +114,7 @@ pub const Db = struct {
     pub fn insertImported(self: *Db, blobs: []const BlobView, hash_hex: *const [64]u8, title: []const u8, app: []const u8, pin: []const u8, first_ts: i64, last_ts: i64, copy_count: i64, content_kind: ContentKind) !bool {
         try self.exec("BEGIN IMMEDIATE;");
         errdefer self.exec("ROLLBACK;") catch {};
-        const stmt = try self.prepare("INSERT OR IGNORE INTO history_items(hash,title,app,first_copied_at,last_copied_at,copy_count,pin,content_kind) VALUES(?1,?2,?3,?4,?5,?6,NULLIF(?7,''),?8);");
+        const stmt = try self.prepare("INSERT OR IGNORE INTO history_items(hash,title,app,first_copied_at,last_copied_at,copy_count,pin,content_kind,pin_order) VALUES(?1,?2,?3,?4,?5,?6,NULLIF(?7,''),?8,CASE WHEN NULLIF(?7,'') IS NULL THEN NULL ELSE ?5 END);");
         defer _ = sqlite.sqlite3_finalize(stmt);
         try bindText(stmt, 1, hash_hex[0..]);
         try bindText(stmt, 2, title);
@@ -173,7 +175,15 @@ pub const Db = struct {
     }
 
     pub fn togglePin(self: *Db, id: i64) !bool {
-        const stmt = try self.prepare("UPDATE history_items SET pin = CASE WHEN pin IS NULL THEN ?1 ELSE NULL END WHERE id=?2;");
+        const stmt = try self.prepare(
+            \\UPDATE history_items
+            \\SET pin = CASE WHEN pin IS NULL THEN ?1 ELSE NULL END,
+            \\    pin_order = CASE
+            \\        WHEN pin IS NULL THEN (SELECT COALESCE(MAX(pin_order), 0) + 1 FROM history_items)
+            \\        ELSE NULL
+            \\    END
+            \\WHERE id=?2;
+        );
         defer _ = sqlite.sqlite3_finalize(stmt);
         try bindText(stmt, 1, pinned_marker);
         _ = sqlite.sqlite3_bind_int64(stmt, 2, id);
@@ -256,6 +266,13 @@ pub const Db = struct {
         try self.backfillHistoryItemsContentKind();
     }
 
+    fn ensureHistoryItemsPinOrder(self: *Db) !void {
+        if (!(try self.tableHasColumn("history_items", "pin_order"))) {
+            try self.exec("ALTER TABLE history_items ADD COLUMN pin_order INTEGER;");
+        }
+        try self.backfillHistoryItemsPinOrder();
+    }
+
     fn tableHasColumn(self: *Db, table_name: []const u8, column_name: []const u8) !bool {
         var sql_buf: [128]u8 = undefined;
         const sql = try std.fmt.bufPrintZ(&sql_buf, "PRAGMA table_info({s});", .{table_name});
@@ -291,6 +308,14 @@ pub const Db = struct {
             \\  ) THEN 1
             \\  ELSE 5
             \\END;
+        );
+    }
+
+    fn backfillHistoryItemsPinOrder(self: *Db) !void {
+        try self.exec(
+            \\UPDATE history_items
+            \\SET pin_order = last_copied_at
+            \\WHERE pin IS NOT NULL AND pin_order IS NULL;
         );
     }
 };
@@ -357,6 +382,20 @@ fn testFetchPin(db: *Db, id: i64, allocator: std.mem.Allocator) !?[]u8 {
     };
 }
 
+fn testFetchPinOrder(db: *Db, id: i64) !?i64 {
+    const stmt = try db.prepare("SELECT pin_order FROM history_items WHERE id=?1;");
+    defer _ = sqlite.sqlite3_finalize(stmt);
+    _ = sqlite.sqlite3_bind_int64(stmt, 1, id);
+    return switch (sqlite.sqlite3_step(stmt)) {
+        sqlite.SQLITE_ROW => if (sqlite.sqlite3_column_type(stmt, 0) == sqlite.SQLITE_NULL)
+            null
+        else
+            sqlite.sqlite3_column_int64(stmt, 0),
+        sqlite.SQLITE_DONE => null,
+        else => error.SqliteStepFailed,
+    };
+}
+
 test "togglePin stores stable marker and null" {
     var db = try Db.open(":memory:");
     defer db.close();
@@ -374,9 +413,12 @@ test "togglePin stores stable marker and null" {
     const pinned = (try testFetchPin(&db, item_id, std.testing.allocator)).?;
     defer std.testing.allocator.free(pinned);
     try std.testing.expectEqualStrings(Db.pinned_marker, pinned);
+    const first_pin_order = (try testFetchPinOrder(&db, item_id)).?;
+    try std.testing.expect(first_pin_order > 0);
 
     try std.testing.expect(try db.togglePin(item_id));
     try std.testing.expectEqual(@as(?[]u8, null), try testFetchPin(&db, item_id, std.testing.allocator));
+    try std.testing.expectEqual(@as(?i64, null), try testFetchPinOrder(&db, item_id));
 }
 
 test "togglePin returns false for missing row" {
@@ -385,6 +427,26 @@ test "togglePin returns false for missing row" {
     try db.migrate();
 
     try std.testing.expect(!(try db.togglePin(99)));
+}
+
+test "togglePin promotes newly pinned items ahead of older pinned items" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    try db.migrate();
+
+    const blobs = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = "hello" }};
+    const hash_a = [_]u8{'a'} ** 64;
+    const hash_b = [_]u8{'b'} ** 64;
+    try std.testing.expect(try db.insertImported(&blobs, &hash_a, "title a", "app", "", 1, 1, 1, .text));
+    const item_a = sqlite.sqlite3_last_insert_rowid(db.handle);
+    try std.testing.expect(try db.insertImported(&blobs, &hash_b, "title b", "app", "", 2, 2, 1, .text));
+    const item_b = sqlite.sqlite3_last_insert_rowid(db.handle);
+
+    try std.testing.expect(try db.togglePin(item_a));
+    const order_a = (try testFetchPinOrder(&db, item_a)).?;
+    try std.testing.expect(try db.togglePin(item_b));
+    const order_b = (try testFetchPinOrder(&db, item_b)).?;
+    try std.testing.expect(order_b > order_a);
 }
 
 test "classifyContentKind uses the same priority as the app query" {
