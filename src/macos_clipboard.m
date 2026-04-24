@@ -43,6 +43,15 @@ static int mz_type_is_transient(NSString *type) {
          [type hasPrefix:kMZMicrosoftSourcePrefix];
 }
 
+static int mz_type_is_string_backed(NSString *type) {
+  if (type == nil) return 0;
+  return [type isEqualToString:@"public.utf8-plain-text"] ||
+         [type isEqualToString:@"public.text"] ||
+         [type isEqualToString:@"public.url"] ||
+         [type isEqualToString:@"public.file-url"] ||
+         [type isEqualToString:@"public.url-name"];
+}
+
 static int mz_append_blob(MZSnapshot *snapshot, NSString *type, NSData *data) {
   if (type == nil || data == nil) return 0;
   char *type_copy = mz_strdup_ns(type);
@@ -169,7 +178,7 @@ int mz_clipboard_write(const MZBlob *blobs, size_t count, const char *source_bun
       if (blobs[i].type == NULL || blobs[i].data == NULL) continue;
       NSString *type = [NSString stringWithUTF8String:blobs[i].type];
       NSData *data = [NSData dataWithBytes:blobs[i].data length:blobs[i].len];
-      if ([type isEqualToString:@"public.utf8-plain-text"] || [type isEqualToString:@"public.text"]) {
+      if (mz_type_is_string_backed(type)) {
         NSString *string = [[NSString alloc] initWithBytes:blobs[i].data
                                                     length:blobs[i].len
                                                   encoding:NSUTF8StringEncoding];

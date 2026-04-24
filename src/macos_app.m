@@ -101,6 +101,13 @@ static NSDateFormatter *mz_time_formatter(void) {
   return formatter;
 }
 
+static NSString *mz_string_from_utf8_or_fallback(const char *value, NSString *fallback) {
+  if (value == NULL) return fallback ?: @"";
+  NSString *string = [NSString stringWithUTF8String:value];
+  if (string != nil) return string;
+  return fallback ?: @"";
+}
+
 static NSTableView *mz_enclosing_table_view(NSView *view) {
   NSView *current = view;
   while (current != nil) {
@@ -321,6 +328,9 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
 @property(nonatomic, strong) MZActionStripItemView *revealActionView;
 @property(nonatomic, strong) MZActionStripItemView *moreActionView;
 @property(nonatomic, strong) NSView *dividerView;
+@property(nonatomic, strong) NSTrackingArea *previewTrackingArea;
+@property(nonatomic, strong) NSPopover *previewPopover;
+@property(nonatomic) BOOL previewEnabled;
 @property(nonatomic, weak) id interactionTarget;
 - (void)configureWithRow:(MZRow *)row
                 selected:(BOOL)selected
@@ -343,6 +353,58 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
 
 - (BOOL)mouseDownCanMoveWindow {
   return NO;
+}
+
+- (void)dismissImagePreview {
+  if (self.previewPopover != nil && self.previewPopover.shown) {
+    [self.previewPopover close];
+  }
+}
+
+- (void)showImagePreviewIfNeeded {
+  if (!self.previewEnabled || self.previewPopover.shown) return;
+  MZRow *row = [self.objectValue isKindOfClass:[MZRow class]] ? self.objectValue : nil;
+  if (row == nil) return;
+
+  size_t len = 0;
+  const unsigned char *bytes = mz_app_copy_image_preview(row.rowID, &len);
+  if (bytes == NULL || len == 0) return;
+
+  NSData *data = [NSData dataWithBytes:bytes length:len];
+  mz_app_free_buffer(bytes, len);
+  NSImage *image = [[NSImage alloc] initWithData:data];
+  if (image == nil) return;
+
+  const CGFloat max_width = 360.0;
+  const CGFloat max_height = 260.0;
+  NSSize image_size = image.size;
+  if (image_size.width <= 0.0 || image_size.height <= 0.0) return;
+  CGFloat scale = MIN(max_width / image_size.width, max_height / image_size.height);
+  if (scale > 1.0) scale = 1.0;
+  NSSize display_size = NSMakeSize(MAX(1.0, floor(image_size.width * scale)), MAX(1.0, floor(image_size.height * scale)));
+
+  NSViewController *controller = [NSViewController new];
+  NSView *content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, display_size.width + 16.0, display_size.height + 16.0)];
+  content.wantsLayer = YES;
+  content.layer.cornerRadius = 12.0;
+  content.layer.masksToBounds = YES;
+  content.layer.backgroundColor = mz_panel_fill().CGColor;
+  content.layer.borderWidth = 1.0;
+  content.layer.borderColor = mz_panel_border().CGColor;
+
+  NSImageView *preview = [[NSImageView alloc] initWithFrame:NSMakeRect(8, 8, display_size.width, display_size.height)];
+  preview.image = image;
+  preview.imageScaling = NSImageScaleProportionallyUpOrDown;
+  [content addSubview:preview];
+  controller.view = content;
+
+  if (self.previewPopover == nil) {
+    self.previewPopover = [NSPopover new];
+    self.previewPopover.behavior = NSPopoverBehaviorTransient;
+    self.previewPopover.animates = YES;
+  }
+  self.previewPopover.contentViewController = controller;
+  [self.previewPopover showRelativeToRect:self.iconBackdrop.bounds ofView:self.iconBackdrop preferredEdge:NSRectEdgeMaxX];
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
@@ -427,8 +489,11 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
   self.dividerView.hidden = NO;
   self.subtitleLabel.textColor = mz_text_secondary();
   self.timeLabel.textColor = mz_text_secondary();
+  self.previewEnabled = row.hasImage || row.contentKind == MZ_APP_CONTENT_IMAGE;
+  if (!self.previewEnabled) [self dismissImagePreview];
 
   [self setNeedsLayout:YES];
+  [self updateTrackingAreas];
 }
 
 - (NSView *)hitTest:(NSPoint)point {
@@ -440,6 +505,20 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
     if (mz_point_hits_view(self, self.moreActionView.button, point)) return self.moreActionView.button;
   }
   return NSPointInRect(point, self.bounds) ? self.rowButton : nil;
+}
+
+- (void)updateTrackingAreas {
+  [super updateTrackingAreas];
+  if (self.previewTrackingArea != nil) {
+    [self removeTrackingArea:self.previewTrackingArea];
+    self.previewTrackingArea = nil;
+  }
+  if (!self.previewEnabled) return;
+  self.previewTrackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds
+                                                          options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
+                                                            owner:self
+                                                         userInfo:nil];
+  [self addTrackingArea:self.previewTrackingArea];
 }
 
 - (void)mouseDown:(NSEvent *)event {
@@ -458,6 +537,16 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
     [self.interactionTarget performSelector:@selector(activateSelection:) withObject:self];
 #pragma clang diagnostic pop
   }
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+  (void)event;
+  [self showImagePreviewIfNeeded];
+}
+
+- (void)mouseExited:(NSEvent *)event {
+  (void)event;
+  [self dismissImagePreview];
 }
 
 - (void)layout {
@@ -496,34 +585,6 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
 }
 @end
 
-static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *event) {
-  if (container == nil || target == nil) return NO;
-  NSPoint point = [container convertPoint:event.locationInWindow fromView:nil];
-  for (NSView *subview in container.subviews.reverseObjectEnumerator) {
-    if (![subview isKindOfClass:[MZClipboardCellView class]] || !NSPointInRect(point, subview.frame)) continue;
-
-    MZClipboardCellView *rowView = (MZClipboardCellView *)subview;
-    NSPoint rowPoint = [rowView convertPoint:event.locationInWindow fromView:nil];
-    if (mz_point_hits_view(rowView, rowView.favoriteButton, rowPoint)) return NO;
-
-    if ([target respondsToSelector:@selector(selectRowForItemView:)]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-      [target performSelector:@selector(selectRowForItemView:) withObject:rowView];
-#pragma clang diagnostic pop
-    }
-
-    if ([target respondsToSelector:@selector(activateSelection:)]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-      [target performSelector:@selector(activateSelection:) withObject:rowView];
-#pragma clang diagnostic pop
-    }
-    return YES;
-  }
-  return NO;
-}
-
 @interface MZFlippedView : NSView
 @property(nonatomic, weak) id interactionTarget;
 @end
@@ -535,11 +596,6 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 
 - (BOOL)acceptsFirstResponder {
   return YES;
-}
-
-- (void)mouseDown:(NSEvent *)event {
-  if (mz_activate_row_at_event(self, self.interactionTarget, event)) return;
-  [super mouseDown:event];
 }
 
 - (void)keyDown:(NSEvent *)event {
@@ -554,14 +610,9 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 @end
 
 @interface MZListScrollView : NSScrollView
-@property(nonatomic, weak) id interactionTarget;
 @end
 
 @implementation MZListScrollView
-- (void)mouseDown:(NSEvent *)event {
-  if (mz_activate_row_at_event(self.documentView, self.interactionTarget, event)) return;
-  [super mouseDown:event];
-}
 @end
 
 @interface MZAppController : NSObject <NSApplicationDelegate, NSTextFieldDelegate>
@@ -838,7 +889,6 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   [self.rootView addSubview:listCard];
 
   self.listScrollView = [[MZListScrollView alloc] initWithFrame:listCard.bounds];
-  ((MZListScrollView *)self.listScrollView).interactionTarget = self;
   self.listScrollView.drawsBackground = NO;
   self.listScrollView.borderType = NSNoBorder;
   self.listScrollView.hasVerticalScroller = YES;
@@ -1526,9 +1576,9 @@ void mz_app_set_rows(const MZAppRow *rows, size_t count) {
   for (size_t i = 0; i < count; i++) {
     MZRow *row = [MZRow new];
     row.rowID = rows[i].id;
-    row.title = rows[i].title ? [NSString stringWithUTF8String:rows[i].title] : @"";
-    row.subtitle = rows[i].subtitle ? [NSString stringWithUTF8String:rows[i].subtitle] : @"";
-    row.app = rows[i].app ? [NSString stringWithUTF8String:rows[i].app] : @"";
+    row.title = mz_string_from_utf8_or_fallback(rows[i].title, @"[text]");
+    row.subtitle = mz_string_from_utf8_or_fallback(rows[i].subtitle, @"");
+    row.app = mz_string_from_utf8_or_fallback(rows[i].app, @"");
     row.copiedAt = rows[i].copied_at;
     row.pinOrder = rows[i].pin_order;
     row.contentKind = rows[i].content_kind;

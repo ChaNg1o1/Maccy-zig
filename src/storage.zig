@@ -208,15 +208,22 @@ pub const Db = struct {
             for (owned_data.items) |data| allocator.free(data);
             owned_data.deinit(allocator);
         }
+        var has_url_blob = false;
+        var inferred_url: ?[]u8 = null;
+        defer if (inferred_url) |url| allocator.free(url);
         while (sqlite.sqlite3_step(stmt) == sqlite.SQLITE_ROW) {
             const ty_raw = sqlite.sqlite3_column_text(stmt, 0) orelse continue;
             const ty = std.mem.span(ty_raw);
+            if (isUrlType(ty)) has_url_blob = true;
             if (plain_only and !(std.mem.eql(u8, ty, "public.utf8-plain-text") or std.mem.eql(u8, ty, "public.file-url"))) continue;
             const len_i = sqlite.sqlite3_column_bytes(stmt, 1);
             if (len_i <= 0) continue;
             const blob_ptr = sqlite.sqlite3_column_blob(stmt, 1) orelse continue;
             const len: usize = @intCast(len_i);
             const bytes = @as([*]const u8, @ptrCast(blob_ptr))[0..len];
+            if (!plain_only and inferred_url == null) {
+                if (extractHttpUrl(bytes)) |url| inferred_url = try allocator.dupe(u8, url);
+            }
             const ty_copy = try allocator.dupeZ(u8, ty);
             const data_copy = try allocator.dupe(u8, bytes);
             try owned_types.append(allocator, ty_copy);
@@ -226,6 +233,19 @@ pub const Db = struct {
                 .data = data_copy.ptr,
                 .len = @intCast(len_i),
             });
+        }
+        if (!plain_only and !has_url_blob) {
+            if (inferred_url) |url| {
+                const ty_copy = try allocator.dupeZ(u8, "public.url");
+                const data_copy = try allocator.dupe(u8, url);
+                try owned_types.append(allocator, ty_copy);
+                try owned_data.append(allocator, data_copy);
+                try blobs.append(allocator, .{
+                    .type = ty_copy.ptr,
+                    .data = data_copy.ptr,
+                    .len = @intCast(data_copy.len),
+                });
+            }
         }
         if (blobs.items.len == 0) return error.NoPasteboardContent;
         try writeBlobArrayToPasteboard(blobs.items, "org.p0deje.Maccy");
@@ -237,6 +257,36 @@ pub const Db = struct {
             \\FROM history_contents
             \\WHERE item_id=?1 AND (type='public.file-url' OR type LIKE '%url%')
             \\ORDER BY CASE WHEN type='public.file-url' THEN 0 ELSE 1 END, id ASC
+            \\LIMIT 1;
+        );
+        defer _ = sqlite.sqlite3_finalize(stmt);
+        _ = sqlite.sqlite3_bind_int64(stmt, 1, id);
+
+        return switch (sqlite.sqlite3_step(stmt)) {
+            sqlite.SQLITE_ROW => blk: {
+                const bytes_i = sqlite.sqlite3_column_bytes(stmt, 0);
+                if (bytes_i <= 0) break :blk null;
+                const blob_ptr = sqlite.sqlite3_column_blob(stmt, 0) orelse break :blk null;
+                break :blk try allocator.dupe(u8, @as([*]const u8, @ptrCast(blob_ptr))[0..@intCast(bytes_i)]);
+            },
+            sqlite.SQLITE_DONE => null,
+            else => error.SqliteStepFailed,
+        };
+    }
+
+    pub fn readImagePreview(self: *Db, id: i64, allocator: std.mem.Allocator) !?[]u8 {
+        const stmt = try self.prepare(
+            \\SELECT value
+            \\FROM history_contents
+            \\WHERE item_id=?1
+            \\  AND (
+            \\    type LIKE '%png%' OR
+            \\    type LIKE '%tiff%' OR
+            \\    type LIKE '%jpeg%' OR
+            \\    type LIKE '%jpg%' OR
+            \\    type LIKE '%heic%'
+            \\  )
+            \\ORDER BY id ASC
             \\LIMIT 1;
         );
         defer _ = sqlite.sqlite3_finalize(stmt);
@@ -342,11 +392,37 @@ fn startsWithHttpScheme(title: []const u8) bool {
     return std.mem.startsWith(u8, title, "http://") or std.mem.startsWith(u8, title, "https://");
 }
 
+fn isUrlType(ty: []const u8) bool {
+    return std.mem.eql(u8, ty, "public.url") or
+        std.mem.eql(u8, ty, "public.file-url") or
+        std.mem.eql(u8, ty, "public.url-name");
+}
+
 fn isImageType(ty: []const u8) bool {
     return std.mem.indexOf(u8, ty, "png") != null or
         std.mem.indexOf(u8, ty, "tiff") != null or
         std.mem.indexOf(u8, ty, "jpeg") != null or
         std.mem.indexOf(u8, ty, "heic") != null;
+}
+
+fn extractHttpUrl(bytes: []const u8) ?[]const u8 {
+    const https_idx = std.mem.indexOf(u8, bytes, "https://");
+    const http_idx = std.mem.indexOf(u8, bytes, "http://");
+    const start = switch (https_idx != null or http_idx != null) {
+        true => if (https_idx) |idx|
+            if (http_idx) |http| @min(idx, http) else idx
+        else
+            http_idx.?,
+        false => return null,
+    };
+
+    var end = start;
+    while (end < bytes.len) : (end += 1) {
+        const ch = bytes[end];
+        if (ch <= 0x20 or ch == '"' or ch == '\'' or ch == '<' or ch == '>' or ch == ')' or ch == ']') break;
+    }
+    if (end <= start) return null;
+    return bytes[start..end];
 }
 
 pub fn bindText(stmt: *sqlite.sqlite3_stmt, idx: c_int, value: []const u8) !void {
@@ -465,4 +541,10 @@ test "classifyContentKind uses the same priority as the app query" {
 
     const other = [_]BlobView{.{ .ty = "com.example.binary", .data = "\x00\x01" }};
     try std.testing.expectEqual(ContentKind.other, classifyContentKind(&other, "blob"));
+}
+
+test "extractHttpUrl finds link inside html" {
+    const html = "<a href=\"https://example.com/docs?q=1\">example</a>";
+    const url = extractHttpUrl(html).?;
+    try std.testing.expectEqualStrings("https://example.com/docs?q=1", url);
 }

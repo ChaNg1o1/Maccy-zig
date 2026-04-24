@@ -57,6 +57,8 @@ void mz_app_hide(void);
 void mz_app_set_rows(const MZAppRow *rows, size_t count);
 void mz_app_set_status_text(const char *text);
 void mz_app_reveal_target(const char *target);
+const unsigned char *mz_app_copy_image_preview(int64_t row_id, size_t *len_out);
+void mz_app_free_buffer(const unsigned char *buffer, size_t len);
 
 #ifdef __cplusplus
 }

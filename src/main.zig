@@ -26,6 +26,8 @@ const default_types = [_][]const u8{
     "public.html",
     "public.png",
     "public.rtf",
+    "public.url",
+    "public.url-name",
     "public.utf8-plain-text",
     "public.tiff",
 };
@@ -125,6 +127,8 @@ fn parseOptions(args: []const []const u8, cfg: *Config) !void {
                 "public.file-url",
                 "public.html",
                 "public.rtf",
+                "public.url",
+                "public.url-name",
                 "public.utf8-plain-text",
             };
         } else if (std.mem.eql(u8, arg, "--source")) {
@@ -498,6 +502,21 @@ fn appRefreshRows() !void {
     }
     c.mz_app_set_rows(rows.items.ptr, rows.items.len);
     c.mz_app_set_status_text("M");
+}
+
+pub export fn mz_app_copy_image_preview(row_id: i64, len_out: ?*usize) ?[*]const u8 {
+    if (len_out) |len| len.* = 0;
+    const db = g_app_db orelse return null;
+    const preview = db.readImagePreview(row_id, std.heap.c_allocator) catch return null;
+    const bytes = preview orelse return null;
+    if (len_out) |len| len.* = bytes.len;
+    return bytes.ptr;
+}
+
+pub export fn mz_app_free_buffer(buffer: ?[*]const u8, len: usize) void {
+    const ptr = buffer orelse return;
+    if (len == 0) return;
+    std.heap.c_allocator.free(@constCast(ptr[0..len]));
 }
 
 const ImportStats = struct { items: usize = 0, contents: usize = 0, skipped_blobs: usize = 0, skipped_items: usize = 0 };

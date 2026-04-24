@@ -168,9 +168,13 @@ pub fn titleFromBlobs(blobs: []const BlobView) [256]u8 {
     var out: [256]u8 = [_]u8{0} ** 256;
     for (blobs) |blob| {
         if (std.mem.eql(u8, blob.ty, "public.utf8-plain-text")) {
-            const n = @min(blob.data.len, out.len - 1);
-            @memcpy(out[0..n], blob.data[0..n]);
-            sanitizeTitle(out[0..n]);
+            const prefix = utf8SafePrefix(blob.data, out.len - 1);
+            if (prefix.len == 0) {
+                @memcpy(out[0..6], "[text]");
+                return out;
+            }
+            @memcpy(out[0..prefix.len], prefix);
+            sanitizeTitle(out[0..prefix.len]);
             return out;
         }
     }
@@ -184,10 +188,26 @@ pub fn titleFromBlobs(blobs: []const BlobView) [256]u8 {
     return out;
 }
 
+fn utf8SafePrefix(bytes: []const u8, max_len: usize) []const u8 {
+    var end = @min(bytes.len, max_len);
+    while (end > 0 and !std.unicode.utf8ValidateSlice(bytes[0..end])) : (end -= 1) {}
+    return bytes[0..end];
+}
+
 pub fn sanitizeTitle(bytes: []u8) void {
     for (bytes) |*b| {
         if (b.* == '\n') b.* = ' ';
         if (b.* == '\t') b.* = ' ';
         if (b.* == 0) b.* = ' ';
     }
+}
+
+test "titleFromBlobs keeps long utf8 text decodable" {
+    const chunk = "你好";
+    const long_text = chunk ** 120;
+    const blobs = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = long_text }};
+    const title = titleFromBlobs(&blobs);
+    const slice = std.mem.sliceTo(title[0..], 0);
+    try std.testing.expect(slice.len > 0);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(slice));
 }
