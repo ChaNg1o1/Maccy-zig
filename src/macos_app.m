@@ -213,6 +213,14 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
 @property(nonatomic) int64_t rowID;
 @end
 @implementation MZRowActionButton
+- (BOOL)acceptsFirstMouse:(NSEvent *)event {
+  (void)event;
+  return YES;
+}
+
+- (BOOL)mouseDownCanMoveWindow {
+  return NO;
+}
 @end
 
 @interface MZActionStripItemView : NSView
@@ -300,7 +308,6 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
 
 @interface MZClipboardCellView : NSTableCellView
 @property(nonatomic, strong) NSView *rowContainer;
-@property(nonatomic, strong) MZRowActionButton *rowButton;
 @property(nonatomic, strong) NSView *iconBackdrop;
 @property(nonatomic, strong) NSImageView *iconView;
 @property(nonatomic, strong) NSTextField *titleLabel;
@@ -328,13 +335,6 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
   return NSPointInRect(point, rect);
 }
 
-static BOOL mz_point_hits_view_with_slop(NSView *container, NSView *target, NSPoint point, CGFloat slop) {
-  if (target == nil || target.hidden || target.alphaValue <= 0.01) return NO;
-  NSRect rect = [container convertRect:target.bounds fromView:target];
-  rect = NSInsetRect(rect, -slop, -slop);
-  return NSPointInRect(point, rect);
-}
-
 - (instancetype)initWithFrame:(NSRect)frameRect {
   if ((self = [super initWithFrame:frameRect])) {
     self.wantsLayer = YES;
@@ -344,13 +344,6 @@ static BOOL mz_point_hits_view_with_slop(NSView *container, NSView *target, NSPo
     _rowContainer.layer.cornerRadius = 10.0;
     _rowContainer.layer.masksToBounds = YES;
     [self addSubview:_rowContainer];
-
-    _rowButton = [[MZRowActionButton alloc] initWithFrame:NSZeroRect];
-    _rowButton.title = @"";
-    _rowButton.bordered = NO;
-    _rowButton.transparent = YES;
-    _rowButton.focusRingType = NSFocusRingTypeNone;
-    [self addSubview:_rowButton];
 
     _iconBackdrop = [[NSView alloc] initWithFrame:NSZeroRect];
     _iconBackdrop.wantsLayer = YES;
@@ -407,10 +400,6 @@ static BOOL mz_point_hits_view_with_slop(NSView *container, NSView *target, NSPo
   self.favoriteButton.image = mz_symbol_image(row.pinned ? @"star.fill" : @"star", 18.0);
   self.favoriteButton.contentTintColor = row.pinned ? mz_warning_yellow() : mz_text_secondary();
 
-  self.rowButton.target = target;
-  self.rowButton.action = @selector(pasteRow:);
-  self.rowButton.rowID = row.rowID;
-
   self.rowContainer.layer.backgroundColor = (selected ? mz_selected_fill() : NSColor.clearColor).CGColor;
   self.rowContainer.layer.borderColor = (selected ? mz_selected_border() : NSColor.clearColor).CGColor;
   self.rowContainer.layer.borderWidth = selected ? 1.0 : 0.0;
@@ -422,14 +411,14 @@ static BOOL mz_point_hits_view_with_slop(NSView *container, NSView *target, NSPo
 }
 
 - (NSView *)hitTest:(NSPoint)point {
-  if (mz_point_hits_view_with_slop(self, self.favoriteButton, point, 6.0)) return self.favoriteButton;
+  if (mz_point_hits_view(self, self.favoriteButton, point)) return self.favoriteButton;
   if (self.actionBar != nil && !self.actionBar.hidden) {
     if (mz_point_hits_view(self, self.pasteActionView.button, point)) return self.pasteActionView.button;
     if (mz_point_hits_view(self, self.duplicateActionView.button, point)) return self.duplicateActionView.button;
     if (mz_point_hits_view(self, self.revealActionView.button, point)) return self.revealActionView.button;
     if (mz_point_hits_view(self, self.moreActionView.button, point)) return self.moreActionView.button;
   }
-  return NSPointInRect(point, self.bounds) ? self.rowButton : nil;
+  return NSPointInRect(point, self.bounds) ? self : nil;
 }
 
 - (void)mouseDown:(NSEvent *)event {
@@ -459,7 +448,6 @@ static BOOL mz_point_hits_view_with_slop(NSView *container, NSView *target, NSPo
   CGFloat container_height = self.bounds.size.height - inset_y * 2.0;
 
   self.rowContainer.frame = NSMakeRect(inset_x, inset_y, container_width, container_height);
-  self.rowButton.frame = self.bounds;
   BOOL expanded = NO;
   CGFloat header_height = container_height;
   CGFloat action_height = 0.0;
@@ -467,11 +455,11 @@ static BOOL mz_point_hits_view_with_slop(NSView *container, NSView *target, NSPo
   self.iconBackdrop.frame = NSMakeRect(8, header_height - 59, 48, 48);
   self.iconView.frame = NSMakeRect(7, 7, 34, 34);
 
-  CGFloat right_margin = 164.0;
+  CGFloat right_margin = 150.0;
   self.titleLabel.frame = NSMakeRect(76, header_height - 35, container_width - 76 - right_margin, 23);
   self.subtitleLabel.frame = NSMakeRect(76, header_height - 58, container_width - 76 - right_margin, 18);
   self.timeLabel.frame = NSMakeRect(container_width - 118, header_height - 33, 72, 20);
-  self.favoriteButton.frame = NSMakeRect(container_width - 46, header_height - 48, 40, 40);
+  self.favoriteButton.frame = NSMakeRect(container_width - 38, header_height - 42, 28, 28);
 
   if (expanded) {
     self.actionBar.frame = NSMakeRect(0, 0, container_width, action_height);
@@ -494,7 +482,7 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 
     MZClipboardCellView *rowView = (MZClipboardCellView *)subview;
     NSPoint rowPoint = [rowView convertPoint:event.locationInWindow fromView:nil];
-    if (mz_point_hits_view_with_slop(rowView, rowView.favoriteButton, rowPoint, 6.0)) return NO;
+    if (mz_point_hits_view(rowView, rowView.favoriteButton, rowPoint)) return NO;
 
     if ([target respondsToSelector:@selector(selectRowForItemView:)]) {
 #pragma clang diagnostic push
