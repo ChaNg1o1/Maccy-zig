@@ -1,0 +1,36 @@
+#pragma once
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct MZBlob {
+  char *type;
+  uint8_t *data;
+  size_t len;
+} MZBlob;
+
+typedef struct MZSnapshot {
+  int64_t change_count;
+  char *source_bundle;
+  size_t count;
+  MZBlob *blobs;
+  int has_maccy_marker;
+  size_t skipped_type_count;
+  size_t skipped_oversize_count;
+  size_t skipped_transient_count;
+} MZSnapshot;
+
+int mz_clipboard_snapshot(MZSnapshot *out,
+                          const char **enabled_types,
+                          size_t enabled_count,
+                          size_t max_blob_bytes);
+int64_t mz_clipboard_change_count(void);
+void mz_clipboard_snapshot_free(MZSnapshot *snapshot);
+int mz_clipboard_write(const MZBlob *blobs, size_t count, const char *source_bundle);
+
+#ifdef __cplusplus
+}
+#endif

@@ -1,0 +1,7 @@
+.{
+    .name = .MaccyZig,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{""},
+    .fingerprint = 0xba7c5f08493bde30,
+}
