@@ -466,7 +466,7 @@ fn appRefreshRows() !void {
         \\       content_kind
         \\FROM history_items
         \\WHERE (?1 = '' OR title LIKE '%' || ?1 || '%' OR app LIKE '%' || ?1 || '%')
-        \\ORDER BY (pin IS NULL), pin_order DESC, last_copied_at DESC
+        \\ORDER BY last_copied_at DESC, id DESC
         \\LIMIT 200;
     ;
     const stmt = try db.prepare(sql);

@@ -1306,8 +1306,6 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (NSComparisonResult)compareRow:(MZRow *)lhs withRow:(MZRow *)rhs {
-  if (lhs.pinned != rhs.pinned) return lhs.pinned ? NSOrderedAscending : NSOrderedDescending;
-  if (lhs.pinOrder != rhs.pinOrder) return lhs.pinOrder > rhs.pinOrder ? NSOrderedAscending : NSOrderedDescending;
   if (lhs.copiedAt != rhs.copiedAt) return lhs.copiedAt > rhs.copiedAt ? NSOrderedAscending : NSOrderedDescending;
   if (lhs.rowID != rhs.rowID) return lhs.rowID > rhs.rowID ? NSOrderedAscending : NSOrderedDescending;
   return NSOrderedSame;
