@@ -328,6 +328,13 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
   return NSPointInRect(point, rect);
 }
 
+static BOOL mz_point_hits_view_with_slop(NSView *container, NSView *target, NSPoint point, CGFloat slop) {
+  if (target == nil || target.hidden || target.alphaValue <= 0.01) return NO;
+  NSRect rect = [container convertRect:target.bounds fromView:target];
+  rect = NSInsetRect(rect, -slop, -slop);
+  return NSPointInRect(point, rect);
+}
+
 - (instancetype)initWithFrame:(NSRect)frameRect {
   if ((self = [super initWithFrame:frameRect])) {
     self.wantsLayer = YES;
@@ -415,7 +422,7 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
 }
 
 - (NSView *)hitTest:(NSPoint)point {
-  if (mz_point_hits_view(self, self.favoriteButton, point)) return self.favoriteButton;
+  if (mz_point_hits_view_with_slop(self, self.favoriteButton, point, 6.0)) return self.favoriteButton;
   if (self.actionBar != nil && !self.actionBar.hidden) {
     if (mz_point_hits_view(self, self.pasteActionView.button, point)) return self.pasteActionView.button;
     if (mz_point_hits_view(self, self.duplicateActionView.button, point)) return self.duplicateActionView.button;
@@ -460,11 +467,11 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
   self.iconBackdrop.frame = NSMakeRect(8, header_height - 59, 48, 48);
   self.iconView.frame = NSMakeRect(7, 7, 34, 34);
 
-  CGFloat right_margin = 150.0;
+  CGFloat right_margin = 164.0;
   self.titleLabel.frame = NSMakeRect(76, header_height - 35, container_width - 76 - right_margin, 23);
   self.subtitleLabel.frame = NSMakeRect(76, header_height - 58, container_width - 76 - right_margin, 18);
   self.timeLabel.frame = NSMakeRect(container_width - 118, header_height - 33, 72, 20);
-  self.favoriteButton.frame = NSMakeRect(container_width - 38, header_height - 42, 28, 28);
+  self.favoriteButton.frame = NSMakeRect(container_width - 46, header_height - 48, 40, 40);
 
   if (expanded) {
     self.actionBar.frame = NSMakeRect(0, 0, container_width, action_height);
@@ -487,7 +494,7 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 
     MZClipboardCellView *rowView = (MZClipboardCellView *)subview;
     NSPoint rowPoint = [rowView convertPoint:event.locationInWindow fromView:nil];
-    if (mz_point_hits_view(rowView, rowView.favoriteButton, rowPoint)) return NO;
+    if (mz_point_hits_view_with_slop(rowView, rowView.favoriteButton, rowPoint, 6.0)) return NO;
 
     if ([target respondsToSelector:@selector(selectRowForItemView:)]) {
 #pragma clang diagnostic push
