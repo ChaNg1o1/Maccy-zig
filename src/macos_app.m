@@ -568,6 +568,7 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 @property(nonatomic, strong) id keyEventMonitor;
 @property(nonatomic) MZFilterMode filterMode;
 @property(nonatomic) NSInteger selectedRowIndex;
+@property(nonatomic) BOOL windowPinned;
 @end
 
 static MZAppController *gController = nil;
@@ -612,6 +613,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     _filterButtons = [NSMutableArray array];
     _filterMode = MZFilterModeAll;
     _selectedRowIndex = -1;
+    _windowPinned = NO;
   }
   return self;
 }
@@ -681,8 +683,8 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   self.panel.titlebarAppearsTransparent = YES;
   self.panel.movableByWindowBackground = YES;
   self.panel.hidesOnDeactivate = YES;
-  self.panel.floatingPanel = YES;
-  self.panel.level = NSFloatingWindowLevel;
+  self.panel.floatingPanel = NO;
+  self.panel.level = NSNormalWindowLevel;
   self.panel.backgroundColor = NSColor.clearColor;
   self.panel.opaque = NO;
   self.panel.hasShadow = YES;
@@ -716,8 +718,9 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   title.alignment = NSTextAlignmentCenter;
   [self.rootView addSubview:title];
 
-  self.pinButton = [self chromeButtonWithSymbol:@"pin" action:@selector(toggleSelectedFavorite:)];
+  self.pinButton = [self chromeButtonWithSymbol:@"pin" action:@selector(toggleWindowPin:)];
   self.pinButton.frame = NSMakeRect(frame.size.width - 98, frame.size.height - chromeTop, 28, 28);
+  self.pinButton.toolTip = @"Keep window on top";
   [self.rootView addSubview:self.pinButton];
 
   self.settingsButton = [self chromeButtonWithSymbol:@"gearshape" action:@selector(showHeaderMenu:)];
@@ -897,6 +900,8 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   NSMenuItem *quit_item = [[NSMenuItem alloc] initWithTitle:@"Quit" action:@selector(quitApplication:) keyEquivalent:@""];
   quit_item.target = self;
   [self.actionsMenu addItem:quit_item];
+
+  [self updateWindowPinButton];
 }
 
 - (NSButton *)chromeButtonWithSymbol:(NSString *)symbol action:(SEL)action {
@@ -940,6 +945,18 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 - (void)toggle:(id)sender {
   (void)sender;
   if (self.panel.isVisible) [self hide]; else [self show];
+}
+
+- (void)applyWindowPinState {
+  self.panel.hidesOnDeactivate = !self.windowPinned;
+  self.panel.floatingPanel = self.windowPinned;
+  self.panel.level = self.windowPinned ? NSFloatingWindowLevel : NSNormalWindowLevel;
+  [self updateWindowPinButton];
+}
+
+- (void)updateWindowPinButton {
+  self.pinButton.image = mz_symbol_image(self.windowPinned ? @"pin.fill" : @"pin", 20.0);
+  self.pinButton.contentTintColor = self.windowPinned ? mz_warning_yellow() : mz_text_secondary();
 }
 
 - (void)show {
@@ -1149,8 +1166,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     button.contentTintColor = active ? NSColor.whiteColor : mz_text_primary();
   }
 
-  MZRow *selected = [self selectedItem];
-  self.pinButton.contentTintColor = (selected && selected.pinned) ? mz_warning_yellow() : mz_text_secondary();
+  [self updateWindowPinButton];
 }
 
 - (void)updateCountLabel {
@@ -1219,6 +1235,17 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 - (void)toggleSelectedFavorite:(id)sender {
   (void)sender;
   [self performSelectedAction:MZ_APP_ACTION_TOGGLE_PIN hidesPanel:NO];
+}
+
+- (void)toggleWindowPin:(id)sender {
+  (void)sender;
+  self.windowPinned = !self.windowPinned;
+  [self applyWindowPinState];
+  if (self.panel.isVisible) {
+    [NSApp activateIgnoringOtherApps:YES];
+    [self.panel orderFrontRegardless];
+    [self.panel makeKeyAndOrderFront:nil];
+  }
 }
 
 - (void)togglePinFromButton:(MZRowActionButton *)sender {
