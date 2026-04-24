@@ -335,6 +335,15 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
   return NSPointInRect(point, rect);
 }
 
+- (BOOL)acceptsFirstMouse:(NSEvent *)event {
+  (void)event;
+  return YES;
+}
+
+- (BOOL)mouseDownCanMoveWindow {
+  return NO;
+}
+
 - (instancetype)initWithFrame:(NSRect)frameRect {
   if ((self = [super initWithFrame:frameRect])) {
     self.wantsLayer = YES;
@@ -411,7 +420,7 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
 }
 
 - (NSView *)hitTest:(NSPoint)point {
-  if (mz_point_hits_view(self, self.favoriteButton, point)) return self.favoriteButton;
+  if (mz_point_hits_view(self, self.favoriteButton, point)) return self;
   if (self.actionBar != nil && !self.actionBar.hidden) {
     if (mz_point_hits_view(self, self.pasteActionView.button, point)) return self.pasteActionView.button;
     if (mz_point_hits_view(self, self.duplicateActionView.button, point)) return self.duplicateActionView.button;
@@ -422,6 +431,14 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
 }
 
 - (void)mouseDown:(NSEvent *)event {
+  NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+  if (mz_point_hits_view(self, self.favoriteButton, point)) {
+    if (self.favoriteButton.target != nil && self.favoriteButton.action != NULL) {
+      [NSApp sendAction:self.favoriteButton.action to:self.favoriteButton.target from:self.favoriteButton];
+    }
+    return;
+  }
+
   if (self.interactionTarget != nil &&
       [self.interactionTarget respondsToSelector:@selector(selectRowForItemView:)]) {
 #pragma clang diagnostic push
@@ -474,34 +491,6 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
 }
 @end
 
-static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *event) {
-  if (container == nil || target == nil) return NO;
-  NSPoint point = [container convertPoint:event.locationInWindow fromView:nil];
-  for (NSView *subview in container.subviews.reverseObjectEnumerator) {
-    if (![subview isKindOfClass:[MZClipboardCellView class]] || !NSPointInRect(point, subview.frame)) continue;
-
-    MZClipboardCellView *rowView = (MZClipboardCellView *)subview;
-    NSPoint rowPoint = [rowView convertPoint:event.locationInWindow fromView:nil];
-    if (mz_point_hits_view(rowView, rowView.favoriteButton, rowPoint)) return NO;
-
-    if ([target respondsToSelector:@selector(selectRowForItemView:)]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-      [target performSelector:@selector(selectRowForItemView:) withObject:rowView];
-#pragma clang diagnostic pop
-    }
-
-    if ([target respondsToSelector:@selector(activateSelection:)]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-      [target performSelector:@selector(activateSelection:) withObject:rowView];
-#pragma clang diagnostic pop
-    }
-    return YES;
-  }
-  return NO;
-}
-
 @interface MZFlippedView : NSView
 @property(nonatomic, weak) id interactionTarget;
 @end
@@ -513,11 +502,6 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 
 - (BOOL)acceptsFirstResponder {
   return YES;
-}
-
-- (void)mouseDown:(NSEvent *)event {
-  if (mz_activate_row_at_event(self, self.interactionTarget, event)) return;
-  [super mouseDown:event];
 }
 
 - (void)keyDown:(NSEvent *)event {
@@ -532,14 +516,9 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 @end
 
 @interface MZListScrollView : NSScrollView
-@property(nonatomic, weak) id interactionTarget;
 @end
 
 @implementation MZListScrollView
-- (void)mouseDown:(NSEvent *)event {
-  if (mz_activate_row_at_event(self.documentView, self.interactionTarget, event)) return;
-  [super mouseDown:event];
-}
 @end
 
 @interface MZAppController : NSObject <NSApplicationDelegate, NSTextFieldDelegate>
@@ -816,7 +795,6 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   [self.rootView addSubview:listCard];
 
   self.listScrollView = [[MZListScrollView alloc] initWithFrame:listCard.bounds];
-  ((MZListScrollView *)self.listScrollView).interactionTarget = self;
   self.listScrollView.drawsBackground = NO;
   self.listScrollView.borderType = NSNoBorder;
   self.listScrollView.hasVerticalScroller = YES;
