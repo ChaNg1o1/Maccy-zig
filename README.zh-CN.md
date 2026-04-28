@@ -272,7 +272,7 @@ dist/verification/
 - 运行 `./scripts/smoke-package.sh`。
 - 运行 `./scripts/smoke-bundle-launch.sh`。
 - 在干净的 macOS 账号或机器上验证打包后的 App。
-- 决定 bundle identifier 是否继续使用 `org.p0deje.Maccy`，或改为项目专属 identifier。
+- 确认打包产物的 bundle identifier 是 `io.github.chang1o1.MaccyZig`（与原版 Maccy 区分，确保 TCC 授权独立）。
 
 ## 许可证
 

@@ -300,7 +300,7 @@ pub const Db = struct {
             }
         }
         if (blobs.items.len == 0) return error.NoPasteboardContent;
-        try writeBlobArrayToPasteboard(blobs.items, "org.p0deje.Maccy");
+        try writeBlobArrayToPasteboard(blobs.items, "io.github.chang1o1.MaccyZig");
     }
 
     pub fn readRevealTarget(self: *Db, id: i64, allocator: std.mem.Allocator) !?[]u8 {

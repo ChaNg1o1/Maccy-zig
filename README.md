@@ -272,7 +272,7 @@ Before publishing a release on GitHub:
 - Run `./scripts/smoke-package.sh`.
 - Run `./scripts/smoke-bundle-launch.sh`.
 - Verify the packaged app on a clean macOS account or machine.
-- Decide whether the bundle identifier should remain `org.p0deje.Maccy` or use a project-specific identifier.
+- Confirm the packaged bundle identifier is `io.github.chang1o1.MaccyZig` (separate from upstream Maccy so TCC permissions stay isolated).
 
 ## License
 

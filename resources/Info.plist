@@ -5,7 +5,7 @@
   <key>CFBundleExecutable</key>
   <string>maccy-zig</string>
   <key>CFBundleIdentifier</key>
-  <string>org.p0deje.Maccy</string>
+  <string>io.github.chang1o1.MaccyZig</string>
   <key>CFBundleName</key>
   <string>Maccy</string>
   <key>CFBundleDisplayName</key>
