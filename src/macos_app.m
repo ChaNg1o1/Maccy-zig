@@ -16,8 +16,12 @@ typedef NS_ENUM(NSInteger, MZLang) {
 };
 
 static NSString *const kMZLangDefaultsKey = @"MZLanguage";
+static NSString *const kMZMaxItemsDefaultsKey = @"MZMaxItems";
 static NSString *const kMZLangChangedNotification = @"MZLangChangedNotification";
 static MZLang gLang = MZLangEnglish;
+static int64_t gInitialMaxItems = 500;
+
+static NSString *mz_t(NSString *en);
 
 static MZLang mz_lang_from_string(NSString *s) {
   if ([s isEqualToString:@"zh"] || [s isEqualToString:@"zh-Hans"] || [s isEqualToString:@"zh-CN"]) return MZLangChinese;
@@ -45,6 +49,23 @@ static void mz_lang_set(MZLang lang) {
   gLang = lang;
   [NSUserDefaults.standardUserDefaults setObject:mz_lang_to_string(lang) forKey:kMZLangDefaultsKey];
   [NSNotificationCenter.defaultCenter postNotificationName:kMZLangChangedNotification object:nil];
+}
+
+int64_t mz_app_load_max_items(int64_t fallback) {
+  NSInteger stored = [NSUserDefaults.standardUserDefaults integerForKey:kMZMaxItemsDefaultsKey];
+  return stored > 0 ? (int64_t)stored : fallback;
+}
+
+void mz_app_set_initial_max_items(int64_t max_items) {
+  if (max_items > 0) gInitialMaxItems = max_items;
+}
+
+static NSArray<NSNumber *> *mz_max_item_choices(void) {
+  return @[ @200, @500, @1000, @2000 ];
+}
+
+static NSString *mz_max_items_title(NSInteger value) {
+  return [NSString stringWithFormat:@"%ld %@", (long)value, mz_t(@"items")];
 }
 
 // Translate using English source as the key. Unknown keys pass through unchanged so we
@@ -76,6 +97,7 @@ static NSString *mz_t(NSString *en) {
       @"Reveal": @"显示位置",
       @"Clear Unpinned": @"清空未固定",
       @"Language": @"语言",
+      @"History Limit": @"历史数量上限",
       @"English": @"English",
       @"中文": @"中文",
       // Subtitles
@@ -1015,6 +1037,7 @@ static const CGFloat kMZPanelMinHeight = 460.0;
 @property(nonatomic, strong) id keyEventMonitor;
 @property(nonatomic, strong) NSRunningApplication *previousFrontmostApp;
 @property(nonatomic, strong) NSMenuItem *languageMenuItem;
+@property(nonatomic, strong) NSMenuItem *historyLimitMenuItem;
 // Chrome views referenced from -relayoutPanelChrome so the layout stays
 // pixel-correct after the user resizes the window.
 @property(nonatomic, strong) NSImageView *titleMark;
@@ -1028,6 +1051,7 @@ static const CGFloat kMZPanelMinHeight = 460.0;
 @property(nonatomic, strong) NSView *clearHint;
 @property(nonatomic) MZFilterMode filterMode;
 @property(nonatomic) NSInteger selectedRowIndex;
+@property(nonatomic) NSInteger maxItemsLimit;
 @property(nonatomic) BOOL windowPinned;
 @end
 
@@ -1076,6 +1100,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     _tabDividers = [NSMutableArray array];
     _filterMode = MZFilterModeAll;
     _selectedRowIndex = -1;
+    _maxItemsLimit = gInitialMaxItems > 0 ? (NSInteger)gInitialMaxItems : 500;
     _windowPinned = NO;
   }
   return self;
@@ -1376,6 +1401,21 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   langRoot.submenu = langMenu;
   [self.actionsMenu addItem:langRoot];
   self.languageMenuItem = langRoot;
+
+  NSMenuItem *historyRoot = [[NSMenuItem alloc] initWithTitle:mz_t(@"History Limit") action:NULL keyEquivalent:@""];
+  historyRoot.image = mz_menu_symbol_image(@"clock.arrow.circlepath");
+  NSMenu *historyMenu = [[NSMenu alloc] initWithTitle:@"History Limit"];
+  for (NSNumber *choice in mz_max_item_choices()) {
+    NSInteger value = choice.integerValue;
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:mz_max_items_title(value) action:@selector(changeHistoryLimit:) keyEquivalent:@""];
+    item.target = self;
+    item.tag = value;
+    item.state = (value == self.maxItemsLimit) ? NSControlStateValueOn : NSControlStateValueOff;
+    [historyMenu addItem:item];
+  }
+  historyRoot.submenu = historyMenu;
+  [self.actionsMenu addItem:historyRoot];
+  self.historyLimitMenuItem = historyRoot;
 
   [self.actionsMenu addItem:[NSMenuItem separatorItem]];
   NSMenuItem *quit_item = [[NSMenuItem alloc] initWithTitle:@"Quit" action:@selector(quitApplication:) keyEquivalent:@""];
@@ -1990,9 +2030,29 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   mz_lang_set(MZLangChinese);
 }
 
+- (void)changeHistoryLimit:(NSMenuItem *)sender {
+  NSInteger value = sender.tag;
+  if (value <= 0) return;
+  self.maxItemsLimit = value;
+  [NSUserDefaults.standardUserDefaults setInteger:value forKey:kMZMaxItemsDefaultsKey];
+  [self updateHistoryLimitMenu];
+  if (self.callbacks.on_max_items_change != NULL) {
+    self.callbacks.on_max_items_change((int64_t)value);
+  }
+}
+
 - (void)handleLanguageChange:(NSNotification *)note {
   (void)note;
   [self applyLocalization];
+}
+
+- (void)updateHistoryLimitMenu {
+  if (self.historyLimitMenuItem == nil) return;
+  self.historyLimitMenuItem.title = mz_t(@"History Limit");
+  for (NSMenuItem *item in self.historyLimitMenuItem.submenu.itemArray) {
+    item.title = mz_max_items_title(item.tag);
+    item.state = (item.tag == self.maxItemsLimit) ? NSControlStateValueOn : NSControlStateValueOff;
+  }
 }
 
 - (void)applyLocalization {
@@ -2024,6 +2084,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     // index 6 is a separator
     self.actionsMenu.itemArray[7].title = mz_t(@"Language");
   }
+  [self updateHistoryLimitMenu];
   // Sync the radio-style state on the language submenu.
   if (self.languageMenuItem.submenu.itemArray.count >= 2) {
     NSMenuItem *enItem = self.languageMenuItem.submenu.itemArray[0];

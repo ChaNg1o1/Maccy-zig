@@ -28,7 +28,8 @@ fn nowNs() i128 {
 const Config = struct {
     db_path: []const u8,
     interval_ms: u64 = 500,
-    max_items: i64 = 200,
+    max_items: i64 = 500,
+    max_items_overridden: bool = false,
     max_blob_bytes: usize = 16 * 1024 * 1024,
     /// 0 disables age-based pruning. Otherwise, unpinned items older than
     /// `max_age_days` (since last_copied_at) are deleted at startup and once
@@ -111,7 +112,7 @@ fn usage() void {
         \\Options:
         \\  --db PATH            SQLite path (default: ~/Library/Application Support/MaccyZig/Storage.sqlite)
         \\  --interval-ms N      Poll interval for watch (default: 500)
-        \\  --max-items N        Unpinned history cap (default: 200)
+        \\  --max-items N        Unpinned history cap (default: 500)
         \\  --max-blob-mib N     Skip individual pasteboard blobs above N MiB (default: 16)
         \\  --max-age-days N     Auto-delete unpinned items older than N days (default: 0 = off)
         \\  --no-images          Store text/html/rtf/file URLs only
@@ -140,6 +141,7 @@ fn parseOptions(args: []const []const u8, cfg: *Config) !void {
             i += 1;
             if (i >= args.len) return error.MissingMaxItems;
             cfg.max_items = try std.fmt.parseInt(i64, args[i], 10);
+            cfg.max_items_overridden = true;
         } else if (std.mem.eql(u8, arg, "--max-blob-mib")) {
             i += 1;
             if (i >= args.len) return error.MissingMaxBlob;
@@ -377,10 +379,11 @@ fn cmdBench(allocator: std.mem.Allocator, cfg: Config) !void {
             \\SELECT id, title, COALESCE(app, ''), copy_count, last_copied_at
             \\FROM history_items
             \\ORDER BY last_copied_at DESC, id DESC
-            \\LIMIT 200;
+            \\LIMIT ?1;
         ;
         const stmt = try db.prepare(sql);
         defer _ = sqlite.sqlite3_finalize(stmt);
+        _ = sqlite.sqlite3_bind_int64(stmt, 1, cfg.max_items);
         var rows: usize = 0;
         while (sqlite.sqlite3_step(stmt) == sqlite.SQLITE_ROW) rows += 1;
         std.debug.print(
@@ -450,7 +453,7 @@ var g_app_allocator: ?std.mem.Allocator = null;
 var g_app_query: [256]u8 = [_]u8{0} ** 256;
 var g_app_query_len: usize = 0;
 var g_app_last_change: i64 = -1;
-var g_app_max_items: i64 = 200;
+var g_app_max_items: i64 = 500;
 var g_app_max_blob_bytes: usize = 16 * 1024 * 1024;
 var g_app_max_age_days: i64 = 0;
 var g_app_last_age_prune_unix: i64 = 0;
@@ -469,20 +472,26 @@ fn maybePruneByAge(db: *Db, max_age_days: i64) !i64 {
 }
 
 fn cmdApp(allocator: std.mem.Allocator, cfg: Config) !void {
-    try ensureParent(cfg.db_path);
-    var db = try Db.open(cfg.db_path);
+    var effective_cfg = cfg;
+    if (!effective_cfg.max_items_overridden) {
+        effective_cfg.max_items = c.mz_app_load_max_items(effective_cfg.max_items);
+    }
+    c.mz_app_set_initial_max_items(effective_cfg.max_items);
+
+    try ensureParent(effective_cfg.db_path);
+    var db = try Db.open(effective_cfg.db_path);
     defer db.close();
     try db.migrate();
 
     // Bring storage in line with retention policy *before* the UI loads its first
     // snapshot, so cold-start visible rows already reflect any TTL/cap trimming.
-    _ = try db.prune(cfg.max_items);
-    if (cfg.max_age_days > 0) {
-        const removed = try maybePruneByAge(&db, cfg.max_age_days);
+    _ = try db.prune(effective_cfg.max_items);
+    if (effective_cfg.max_age_days > 0) {
+        const removed = try maybePruneByAge(&db, effective_cfg.max_age_days);
         if (removed > 0) {
             std.debug.print(
                 "startup ttl prune removed={d} max_age_days={d}\n",
-                .{ removed, cfg.max_age_days },
+                .{ removed, effective_cfg.max_age_days },
             );
         }
     }
@@ -490,10 +499,10 @@ fn cmdApp(allocator: std.mem.Allocator, cfg: Config) !void {
 
     g_app_db = &db;
     g_app_allocator = allocator;
-    g_app_max_items = cfg.max_items;
-    g_app_max_blob_bytes = cfg.max_blob_bytes;
-    g_app_max_age_days = cfg.max_age_days;
-    g_app_enabled_types = cfg.enabled_types;
+    g_app_max_items = effective_cfg.max_items;
+    g_app_max_blob_bytes = effective_cfg.max_blob_bytes;
+    g_app_max_age_days = effective_cfg.max_age_days;
+    g_app_enabled_types = effective_cfg.enabled_types;
 
     const callbacks = c.MZAppCallbacks{
         .on_toggle = appOnToggle,
@@ -502,6 +511,7 @@ fn cmdApp(allocator: std.mem.Allocator, cfg: Config) !void {
         .on_select = appOnSelect,
         .on_clear = appOnClear,
         .on_quit = appOnQuit,
+        .on_max_items_change = appOnMaxItemsChange,
     };
     c.mz_app_set_action_callback(appOnAction);
     const hotkey_status = c.mz_hotkey_register_popup(appOnHotkey);
@@ -542,6 +552,21 @@ fn appOnSearch(query: [*c]const u8) callconv(.c) void {
 
 fn appOnSelect(id: i64, paste: c_int) callconv(.c) void {
     appWriteSelection(id, false, paste != 0) catch return;
+}
+
+fn appOnMaxItemsChange(max_items: i64) callconv(.c) void {
+    if (max_items <= 0) return;
+    g_app_max_items = max_items;
+    if (g_app_db) |db| {
+        const removed = db.prune(max_items) catch |err| {
+            std.debug.print("prune after max-items change failed: {s}\n", .{@errorName(err)});
+            return;
+        };
+        if (removed > 0) c.mz_app_invalidate_preview_cache();
+        appRefreshRows() catch |err| {
+            std.debug.print("appRefreshRows (max-items) failed: {s}\n", .{@errorName(err)});
+        };
+    }
 }
 
 fn appOnAction(action: c.MZAppAction, row_id: i64) callconv(.c) void {
@@ -670,7 +695,7 @@ fn appRefreshRows() !void {
             \\FROM history_items
             \\WHERE (?1 = '' OR title LIKE '%' || ?1 || '%' OR app LIKE '%' || ?1 || '%')
             \\ORDER BY last_copied_at DESC, id DESC
-            \\LIMIT 200;
+            \\LIMIT ?6;
         ;
         const prepared = try db.prepare(sql);
         // bind kind constants once; they never change between refreshes
@@ -678,12 +703,12 @@ fn appRefreshRows() !void {
         _ = sqlite.sqlite3_bind_int(prepared, 3, c.MZ_APP_CONTENT_FILE);
         _ = sqlite.sqlite3_bind_int(prepared, 4, c.MZ_APP_CONTENT_LINK);
         _ = sqlite.sqlite3_bind_int(prepared, 5, c.MZ_APP_CONTENT_TEXT);
-        _ = sqlite.sqlite3_bind_int(prepared, 6, c.MZ_APP_CONTENT_OTHER);
         g_refresh_stmt = prepared;
         break :blk prepared;
     };
     _ = sqlite.sqlite3_reset(stmt);
     try storage.bindText(stmt, 1, query);
+    _ = sqlite.sqlite3_bind_int64(stmt, 6, g_app_max_items);
     while (sqlite.sqlite3_step(stmt) == sqlite.SQLITE_ROW) {
         const title_txt = sqlite.sqlite3_column_text(stmt, 1) orelse @as([*c]const u8, @ptrCast(""));
         const app_txt = sqlite.sqlite3_column_text(stmt, 2) orelse @as([*c]const u8, @ptrCast(""));

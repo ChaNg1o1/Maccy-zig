@@ -114,9 +114,46 @@ elif [[ "$backend" == "kcov" ]]; then
   include_path="$(IFS=,; echo "${allowlist[*]}")"
   rm -rf "$coverage_dir/kcov"
   kcov --include-pattern="$include_path" "$coverage_dir/kcov" "$test_bin"
+
+  report_dir="$(find "$coverage_dir/kcov" -maxdepth 1 -type d -name 'maccy-zig-test.*' | head -n 1)"
+  if [[ -z "$report_dir" || ! -f "$report_dir/cobertura.xml" ]]; then
+    echo "coverage_status=unavailable"
+    echo "coverage_error=kcov did not produce cobertura.xml"
+    exit 2
+  fi
+
+  summary="$(sed -n 's/.*line-rate="\([^"]*\)".*lines-covered="\([^"]*\)".*lines-valid="\([^"]*\)".*/\1 \2 \3/p' "$report_dir/cobertura.xml" | head -n 1)"
+  if [[ -z "$summary" ]]; then
+    echo "coverage_status=unavailable"
+    echo "coverage_error=could not parse kcov cobertura summary"
+    exit 2
+  fi
+  read -r line_rate covered_lines instrumented_lines <<<"$summary"
+
   echo "coverage_status=generated"
   echo "coverage_report=$coverage_dir/kcov/index.html"
-  echo "coverage_note=parse raw allowlist line counts before claiming >= $min_line_rate"
+  echo "coverage_raw_line_rate=$line_rate"
+  echo "coverage_covered_lines=$covered_lines"
+  echo "coverage_instrumented_lines=$instrumented_lines"
+  awk -v rate="$line_rate" -v min="$min_line_rate" 'BEGIN {
+    printf("coverage_percent=%.1f\n", rate * 100);
+    if (rate + 0 < min + 0) {
+      printf("coverage_gate=fail\n");
+      exit 1;
+    }
+    printf("coverage_gate=pass\n");
+  }'
+  gate_status=$?
+
+  echo "coverage_per_file:"
+  sed -n 's/.*<class name="[^"]*" filename="\([^"]*\)".*line-rate="\([^"]*\)".*/  \1 \2/p' "$report_dir/cobertura.xml" |
+    while read -r file rate; do
+      awk -v file="$file" -v rate="$rate" 'BEGIN { printf("  %s %.1f%%\n", file, rate * 100) }'
+    done
+
+  if [[ $gate_status -ne 0 ]]; then
+    exit 1
+  fi
 else
   echo "coverage_status=unavailable"
   echo "coverage_error=unsupported backend: $backend"

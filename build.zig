@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
 
     const coverage_cmd = b.addSystemCommand(&.{
         "scripts/coverage.sh",
-        "--backend=xcode-llvm",
+        "--backend=kcov",
         "--min-line-rate=0.90",
     });
     coverage_cmd.step.dependOn(&coverage_test_install.step);

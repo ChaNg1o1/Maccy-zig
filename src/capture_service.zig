@@ -211,3 +211,17 @@ test "titleFromBlobs keeps long utf8 text decodable" {
     try std.testing.expect(slice.len > 0);
     try std.testing.expect(std.unicode.utf8ValidateSlice(slice));
 }
+
+test "titleFromBlobs falls back for invalid text image and data" {
+    const invalid_text = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = "\xff" }};
+    const text_title = titleFromBlobs(&invalid_text);
+    try std.testing.expectEqualStrings("[text]", std.mem.sliceTo(text_title[0..], 0));
+
+    const image = [_]BlobView{.{ .ty = "public.tiff", .data = "image" }};
+    const image_title = titleFromBlobs(&image);
+    try std.testing.expectEqualStrings("[image]", std.mem.sliceTo(image_title[0..], 0));
+
+    const data = [_]BlobView{.{ .ty = "com.example.binary", .data = "data" }};
+    const data_title = titleFromBlobs(&data);
+    try std.testing.expectEqualStrings("[data]", std.mem.sliceTo(data_title[0..], 0));
+}

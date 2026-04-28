@@ -1,17 +1,29 @@
-# MaccyZig
+<p align="center">
+  <img src="assets/repo-header.png" alt="MaccyZig 仓库头图">
+</p>
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+<h1 align="center">MaccyZig</h1>
 
-![Platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)
-![macOS](https://img.shields.io/badge/macOS-14%2B-blue)
-![Zig](https://img.shields.io/badge/Zig-0.16.0-f7a41d?logo=zig&logoColor=white)
-![UI](https://img.shields.io/badge/UI-AppKit%20%2B%20Cocoa-5c6bc0)
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-![MaccyZig 仓库头图](assets/repo-header.png)
+<p align="center">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white">
+  <img alt="macOS" src="https://img.shields.io/badge/macOS-14%2B-blue">
+  <img alt="Zig" src="https://img.shields.io/badge/Zig-0.16.0-f7a41d?logo=zig&logoColor=white">
+  <img alt="UI" src="https://img.shields.io/badge/UI-AppKit%20%2B%20Cocoa-5c6bc0">
+</p>
 
 MaccyZig 帮你在 macOS 上找回和复用复制过的内容。
 
 它常驻菜单栏，自动保存可搜索的剪贴板历史，让你快速找回之前复制过的文字、链接、图片和文件，不用反复切换 App 或翻笔记。
+
+## 下载
+
+预构建的 macOS 版本会发布到 GitHub [Releases](https://github.com/ChaNg1o1/Maccy-zig/releases) 页面。你也可以在仓库页面右侧的 Releases 区域直接下载。
+
+下载 `MaccyZig-*-macOS.zip`，解压后把 `Maccy.app` 移动到 `/Applications`。
 
 ## 你可以用它做什么
 
@@ -21,6 +33,7 @@ MaccyZig 帮你在 macOS 上找回和复用复制过的内容。
 - 把重要内容加入收藏，清理历史时不会丢失。
 - 在使用图片前先预览。
 - 历史太乱时，一键清空未收藏内容。
+- 在设置菜单里调整历史数量上限。
 - 调整窗口大小，并在下次打开时保留尺寸。
 - 在英文和简体中文界面之间切换。
 
@@ -160,7 +173,7 @@ zig build run -- once
 ```text
 --db PATH            SQLite 路径
 --interval-ms N      watch 轮询间隔，默认 500
---max-items N        未固定历史上限，默认 200
+--max-items N        未固定历史上限，默认 500
 --max-blob-mib N     跳过超过 N MiB 的单个剪贴板 blob，默认 16
 --max-age-days N     自动删除超过 N 天的未固定条目，默认 0 = 关闭
 --no-images          仅存储 text/html/rtf/文件 URL
@@ -191,6 +204,16 @@ Smoke test 启动：
 ```text
 dist/verification/
 ```
+
+## Release 构建
+
+推送类似 `v0.1.0` 的 tag，或在 Actions 页面手动运行 `Release` workflow，都会触发 GitHub Actions 创建发布版本。
+
+每个 release 会包含：
+
+- `MaccyZig-<tag>-macOS.zip`
+- `MaccyZig-<tag>-macOS.zip.sha256`
+- 带小型 ASCII logo 和安装说明的 release notes
 
 ## 项目结构
 

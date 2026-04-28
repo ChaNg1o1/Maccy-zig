@@ -47,8 +47,11 @@ typedef struct MZAppCallbacks {
   void (*on_select)(int64_t id, int paste);
   void (*on_clear)(int all);
   void (*on_quit)(void);
+  void (*on_max_items_change)(int64_t max_items);
 } MZAppCallbacks;
 
+int64_t mz_app_load_max_items(int64_t fallback);
+void mz_app_set_initial_max_items(int64_t max_items);
 void mz_app_run(MZAppCallbacks callbacks);
 void mz_app_set_action_callback(MZAppActionCallback callback);
 void mz_app_toggle(void);

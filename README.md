@@ -1,18 +1,29 @@
-# MaccyZig
+<p align="center">
+  <img src="assets/repo-header.png" alt="MaccyZig repository header">
+</p>
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+<h1 align="center">MaccyZig</h1>
 
-![Platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)
-![macOS](https://img.shields.io/badge/macOS-14%2B-blue)
-![Zig](https://img.shields.io/badge/Zig-0.16.0-f7a41d?logo=zig&logoColor=white)
-![UI](https://img.shields.io/badge/UI-AppKit%20%2B%20Cocoa-5c6bc0)
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-![MaccyZig repository header](assets/repo-header.png)
+<p align="center">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white">
+  <img alt="macOS" src="https://img.shields.io/badge/macOS-14%2B-blue">
+  <img alt="Zig" src="https://img.shields.io/badge/Zig-0.16.0-f7a41d?logo=zig&logoColor=white">
+  <img alt="UI" src="https://img.shields.io/badge/UI-AppKit%20%2B%20Cocoa-5c6bc0">
+</p>
 
 MaccyZig helps you find and reuse things you copied on macOS.
 
 It lives in the menu bar, keeps a searchable clipboard history, and lets you quickly paste old text, links, images, and files without switching apps or digging through notes.
 
+## Download
+
+Prebuilt macOS builds are published on the GitHub [Releases](https://github.com/ChaNg1o1/Maccy-zig/releases) page. You can also use the Releases panel on the right side of the repository page.
+
+Download `MaccyZig-*-macOS.zip`, unzip it, then move `Maccy.app` to `/Applications`.
 
 ## What You Can Do
 
@@ -22,6 +33,7 @@ It lives in the menu bar, keeps a searchable clipboard history, and lets you qui
 - Mark important items as favorites so they stay around.
 - Preview copied images before using them.
 - Clear old unpinned items when the history gets noisy.
+- Configure the history limit from the settings menu.
 - Resize the window and keep that size next time.
 - Switch the interface between English and Simplified Chinese.
 
@@ -161,7 +173,7 @@ Useful options:
 ```text
 --db PATH            SQLite path
 --interval-ms N      Watch polling interval, default 500
---max-items N        Unpinned history cap, default 200
+--max-items N        Unpinned history cap, default 500
 --max-blob-mib N     Skip individual pasteboard blobs above N MiB, default 16
 --max-age-days N     Auto-delete unpinned items older than N days, default 0 = off
 --no-images          Store text/html/rtf/file URLs only
@@ -192,6 +204,16 @@ Generated verification artifacts are written to:
 ```text
 dist/verification/
 ```
+
+## Release Builds
+
+Release builds are created by GitHub Actions when a tag like `v0.1.0` is pushed, or when the `Release` workflow is run manually from the Actions tab.
+
+Each release includes:
+
+- `MaccyZig-<tag>-macOS.zip`
+- `MaccyZig-<tag>-macOS.zip.sha256`
+- release notes with a small ASCII logo and install notes
 
 ## Project Layout
 

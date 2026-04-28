@@ -485,6 +485,13 @@ fn testFetchPinOrder(db: *Db, id: i64) !?i64 {
     };
 }
 
+fn testFetchInt(db: *Db, sql: [:0]const u8) !i64 {
+    const stmt = try db.prepare(sql);
+    defer _ = sqlite.sqlite3_finalize(stmt);
+    if (sqlite.sqlite3_step(stmt) != sqlite.SQLITE_ROW) return error.SqliteStepFailed;
+    return sqlite.sqlite3_column_int64(stmt, 0);
+}
+
 test "togglePin stores stable marker and null" {
     var db = try Db.open(":memory:");
     defer db.close();
@@ -560,4 +567,99 @@ test "extractHttpUrl finds link inside html" {
     const html = "<a href=\"https://example.com/docs?q=1\">example</a>";
     const url = extractHttpUrl(html).?;
     try std.testing.expectEqualStrings("https://example.com/docs?q=1", url);
+}
+
+test "exec reports sqlite errors" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+
+    try std.testing.expectError(error.SqliteExecFailed, db.exec("SELECT * FROM missing_table;"));
+}
+
+test "insertImported ignores duplicate hashes" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    try db.migrate();
+
+    const blobs = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = "hello" }};
+    const hash = [_]u8{'d'} ** 64;
+    try std.testing.expect(try db.insertImported(&blobs, &hash, "title", "app", "", 1, 1, 1, .text));
+    try std.testing.expect(!(try db.insertImported(&blobs, &hash, "title", "app", "", 1, 1, 1, .text)));
+}
+
+test "insertImported rolls back when content insert cannot be prepared" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    try db.exec(
+        \\CREATE TABLE history_items (
+        \\  id INTEGER PRIMARY KEY,
+        \\  hash TEXT NOT NULL UNIQUE,
+        \\  title TEXT NOT NULL,
+        \\  app TEXT,
+        \\  first_copied_at INTEGER NOT NULL,
+        \\  last_copied_at INTEGER NOT NULL,
+        \\  copy_count INTEGER NOT NULL DEFAULT 1,
+        \\  content_kind INTEGER NOT NULL DEFAULT 5,
+        \\  pin_order INTEGER,
+        \\  pin TEXT
+        \\);
+    );
+
+    const blobs = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = "hello" }};
+    const hash = [_]u8{'r'} ** 64;
+    try std.testing.expectError(error.SqlitePrepareFailed, db.insertImported(&blobs, &hash, "title", "app", "", 1, 1, 1, .text));
+    try std.testing.expectEqual(@as(i64, 0), try testFetchInt(&db, "SELECT COUNT(*) FROM history_items;"));
+}
+
+test "migrate backfills legacy content kind and pin order" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    try db.exec(
+        \\CREATE TABLE history_items (
+        \\  id INTEGER PRIMARY KEY,
+        \\  hash TEXT NOT NULL UNIQUE,
+        \\  title TEXT NOT NULL,
+        \\  app TEXT,
+        \\  first_copied_at INTEGER NOT NULL,
+        \\  last_copied_at INTEGER NOT NULL,
+        \\  copy_count INTEGER NOT NULL DEFAULT 1,
+        \\  pin TEXT
+        \\);
+        \\CREATE TABLE history_contents (
+        \\  id INTEGER PRIMARY KEY,
+        \\  item_id INTEGER NOT NULL REFERENCES history_items(id) ON DELETE CASCADE,
+        \\  type TEXT NOT NULL,
+        \\  value BLOB NOT NULL
+        \\);
+        \\INSERT INTO history_items(id, hash, title, app, first_copied_at, last_copied_at, copy_count, pin)
+        \\VALUES(1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'legacy', 'app', 1, 42, 1, 'pinned');
+        \\INSERT INTO history_contents(item_id, type, value) VALUES(1, 'public.png', X'89504E47');
+    );
+
+    try db.migrate();
+
+    try std.testing.expectEqual(@as(i64, @intFromEnum(ContentKind.image)), try testFetchInt(&db, "SELECT content_kind FROM history_items WHERE id=1;"));
+    try std.testing.expectEqual(@as(i64, 42), try testFetchInt(&db, "SELECT pin_order FROM history_items WHERE id=1;"));
+}
+
+test "readImagePreview returns first image blob" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    try db.migrate();
+
+    const blobs = [_]BlobView{
+        .{ .ty = "public.utf8-plain-text", .data = "note" },
+        .{ .ty = "public.jpeg", .data = "jpeg-bytes" },
+    };
+    const hash = [_]u8{'i'} ** 64;
+    try std.testing.expect(try db.insertImported(&blobs, &hash, "image", "app", "", 1, 1, 1, .image));
+    const item_id = try testFetchInt(&db, "SELECT id FROM history_items WHERE hash='iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii';");
+
+    const preview = (try db.readImagePreview(item_id, std.testing.allocator)).?;
+    defer std.testing.allocator.free(preview);
+    try std.testing.expectEqualStrings("jpeg-bytes", preview);
+}
+
+test "extractHttpUrl returns null without link" {
+    try std.testing.expectEqual(@as(?[]const u8, null), extractHttpUrl("plain text"));
 }
