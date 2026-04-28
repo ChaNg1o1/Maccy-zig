@@ -1,4 +1,5 @@
 #import "macos_app.h"
+#import "macos_paste.h"
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <mach/mach_time.h>
@@ -102,6 +103,21 @@ static NSString *mz_t(NSString *en) {
       @"History Limit": @"历史数量上限",
       @"English": @"English",
       @"中文": @"中文",
+      // Accessibility permission alert
+      @"Grant Accessibility Permission…": @"申请辅助功能权限…",
+      @"Accessibility permission required": @"需要辅助功能权限",
+      @"Accessibility permission already granted": @"辅助功能权限已授予",
+      @"MaccyZig needs Accessibility permission so it can paste a clipboard "
+       "item into the app you were using. Click \"Open Settings\", enable "
+       "MaccyZig under Privacy & Security → Accessibility, then come back "
+       "and try again.":
+        @"MaccyZig 需要「辅助功能」权限才能把剪贴板内容自动粘贴到你正在使用的应用里。"
+        @"请点击「打开设置」，在「隐私与安全性 → 辅助功能」中勾选 MaccyZig，然后回来重试。",
+      @"MaccyZig already has the permission it needs to paste into other apps.":
+        @"MaccyZig 已经具备粘贴到其他应用所需的权限，无需重复授权。",
+      @"Open Settings": @"打开设置",
+      @"Cancel": @"取消",
+      @"OK": @"好",
       // Subtitles
       @"Copied as Image": @"复制为图片",
       @"Copied as File": @"复制为文件",
@@ -1608,6 +1624,14 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   self.historyLimitMenuItem = historyRoot;
 
   [self.actionsMenu addItem:[NSMenuItem separatorItem]];
+  NSMenuItem *axItem = [[NSMenuItem alloc]
+      initWithTitle:mz_t(@"Grant Accessibility Permission…")
+             action:@selector(requestAccessibilityPermission:)
+      keyEquivalent:@""];
+  axItem.target = self;
+  axItem.image = mz_menu_symbol_image(@"lock.shield");
+  [self.actionsMenu addItem:axItem];
+
   NSMenuItem *quit_item = [[NSMenuItem alloc] initWithTitle:@"Quit" action:@selector(quitApplication:) keyEquivalent:@""];
   quit_item.target = self;
   quit_item.image = mz_menu_symbol_image(@"xmark");
@@ -2383,6 +2407,11 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   mz_app_dispatch_action(self, MZ_APP_ACTION_QUIT, 0);
 }
 
+- (void)requestAccessibilityPermission:(id)sender {
+  (void)sender;
+  mz_app_show_accessibility_alert();
+}
+
 - (void)switchLanguageToEnglish:(id)sender {
   (void)sender;
   mz_lang_set(MZLangEnglish);
@@ -2436,16 +2465,22 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   // Footer button.
   if (self.clearButton != nil) self.clearButton.title = mz_t(@"Clear All");
 
-  // Actions menu items (preserve our well-known order).
-  if (self.actionsMenu.itemArray.count >= 9) {
+  // Actions menu items (preserve our well-known order). Layout:
+  //   0 Toggle Favorite, 1 Paste as Plain Text, 2 Reveal,
+  //   3 separator,
+  //   4 Clear Unpinned, 5 Clear All,
+  //   6 separator,
+  //   7 Language, 8 History Limit (re-translated via updateHistoryLimitMenu),
+  //   9 separator,
+  //   10 Grant Accessibility Permission…, 11 Quit
+  if (self.actionsMenu.itemArray.count >= 11) {
     self.actionsMenu.itemArray[0].title = mz_t(@"Toggle Favorite");
     self.actionsMenu.itemArray[1].title = mz_t(@"Paste as Plain Text");
     self.actionsMenu.itemArray[2].title = mz_t(@"Reveal");
-    // index 3 is a separator
     self.actionsMenu.itemArray[4].title = mz_t(@"Clear Unpinned");
     self.actionsMenu.itemArray[5].title = mz_t(@"Clear All");
-    // index 6 is a separator
     self.actionsMenu.itemArray[7].title = mz_t(@"Language");
+    self.actionsMenu.itemArray[10].title = mz_t(@"Grant Accessibility Permission…");
   }
   [self updateHistoryLimitMenu];
   // Sync the radio-style state on the language submenu.
@@ -2749,6 +2784,50 @@ void mz_app_reveal_target(const char *target) {
     }
     if (url != nil) {
       [NSWorkspace.sharedWorkspace openURL:url];
+    }
+  });
+}
+
+void mz_app_show_accessibility_alert(void) {
+  // The native AXIsProcessTrustedWithOptions prompt is small and easy to
+  // miss — especially since we hide the panel right before triggering paste,
+  // so the system dialog can land behind whatever app the user just left.
+  // We complement it with a louder, app-level alert that activates the app
+  // and offers a one-click jump to the Accessibility settings pane.
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (gController != nil) {
+      [gController.panel orderOut:nil];
+    }
+    [NSApp activateIgnoringOtherApps:YES];
+
+    BOOL trusted = mz_ax_is_trusted(0) != 0;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleWarning;
+    if (trusted) {
+      alert.messageText = mz_t(@"Accessibility permission already granted");
+      alert.informativeText = mz_t(@"MaccyZig already has the permission it needs to paste into other apps.");
+      [alert addButtonWithTitle:mz_t(@"OK")];
+      [alert runModal];
+      return;
+    }
+
+    alert.messageText = mz_t(@"Accessibility permission required");
+    alert.informativeText = mz_t(@"MaccyZig needs Accessibility permission so it can paste a clipboard "
+                                 "item into the app you were using. Click \"Open Settings\", enable "
+                                 "MaccyZig under Privacy & Security → Accessibility, then come back "
+                                 "and try again.");
+    [alert addButtonWithTitle:mz_t(@"Open Settings")];
+    [alert addButtonWithTitle:mz_t(@"Cancel")];
+    NSModalResponse resp = [alert runModal];
+    if (resp != NSAlertFirstButtonReturn) return;
+
+    // Triggering the native prompt is what registers MaccyZig in the
+    // Accessibility list. Without this, the user opens Settings and finds
+    // nothing to toggle.
+    mz_ax_is_trusted(1);
+    NSURL *url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"];
+    if (url != nil) {
+      [[NSWorkspace sharedWorkspace] openURL:url];
     }
   });
 }

@@ -67,6 +67,13 @@ void mz_app_free_buffer(const unsigned char *buffer, size_t len);
 /// entry could otherwise serve the old image for a brand-new row.
 void mz_app_invalidate_preview_cache(void);
 
+/// Activate the app and show a clear in-app NSAlert about the Accessibility
+/// permission state. If the permission is missing, the alert offers an
+/// "Open Settings" button that triggers the native trust prompt (so the app
+/// is registered in the Accessibility list) and jumps directly to the
+/// Privacy & Security → Accessibility pane. Safe to call from any thread.
+void mz_app_show_accessibility_alert(void);
+
 #ifdef __cplusplus
 }
 #endif

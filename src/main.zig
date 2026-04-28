@@ -653,13 +653,19 @@ fn appWriteSelection(id: i64, plain_only: bool, paste_after: bool, target_pid: c
         .{ id, plain_only, paste_after, ax_trusted, target_pid },
     );
     if (paste_after) {
-        const can_post_event = ax_trusted or c.mz_ax_is_trusted(1) != 0;
-        if (!can_post_event) {
+        if (!ax_trusted) {
+            // The native AXIsProcessTrustedWithOptions prompt is too easy to
+            // miss, so route through our app-level alert which activates the
+            // app and jumps directly to System Settings → Accessibility on
+            // confirm. We also keep the terminal warning so debug runs still
+            // surface the cause if the alert is dismissed.
             std.debug.print(
-                "  ⚠️  ⌘V NOT posted: Accessibility permission missing for /Applications/Maccy.app. " ++
-                    "Open System Settings → Privacy & Security → Accessibility and re-add the app.\n",
+                "  ⚠️  ⌘V NOT posted: Accessibility permission missing. " ++
+                    "Showing in-app prompt; the user must enable MaccyZig under " ++
+                    "Privacy & Security → Accessibility before paste will work.\n",
                 .{},
             );
+            c.mz_app_show_accessibility_alert();
             return;
         }
         c.mz_post_command_v_to_pid(target_pid);
