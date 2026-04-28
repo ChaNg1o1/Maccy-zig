@@ -6,7 +6,11 @@ APP="$(./scripts/package-app.sh)"
 TS="$(date +%Y%m%d-%H%M%S)"
 BACKUP_ROOT="${BACKUP_ROOT:-$HOME/Backups/MaccyZig-$TS}"
 mkdir -p "$BACKUP_ROOT"
-if pgrep -x Maccy >/dev/null 2>&1 || pgrep -x maccy-zig >/dev/null 2>&1; then
+if pgrep -x Maccy >/dev/null 2>&1 || pgrep -x MaccyZig >/dev/null 2>&1 || pgrep -x maccy-zig >/dev/null 2>&1; then
+  # Try both display names: pre-v0.0.5 builds called themselves "Maccy",
+  # v0.0.5+ uses "MaccyZig". Either AppleScript silently no-ops if the name
+  # is unknown, so running both is safe.
+  osascript -e 'tell application "MaccyZig" to quit' >/dev/null 2>&1 || true
   osascript -e 'tell application "Maccy" to quit' >/dev/null 2>&1 || true
   pkill -x maccy-zig >/dev/null 2>&1 || true
   sleep 2
