@@ -550,8 +550,8 @@ fn appOnSearch(query: [*c]const u8) callconv(.c) void {
     };
 }
 
-fn appOnSelect(id: i64, paste: c_int) callconv(.c) void {
-    appWriteSelection(id, false, paste != 0) catch return;
+fn appOnSelect(id: i64, paste: c_int, target_pid: c_int) callconv(.c) void {
+    appWriteSelection(id, false, paste != 0, target_pid) catch return;
 }
 
 fn appOnMaxItemsChange(max_items: i64) callconv(.c) void {
@@ -569,12 +569,12 @@ fn appOnMaxItemsChange(max_items: i64) callconv(.c) void {
     }
 }
 
-fn appOnAction(action: c.MZAppAction, row_id: i64) callconv(.c) void {
+fn appOnAction(action: c.MZAppAction, row_id: i64, target_pid: c_int) callconv(.c) void {
     if (g_app_db) |db| {
         switch (action) {
-            c.MZ_APP_ACTION_COPY => appWriteSelection(row_id, false, false) catch return,
-            c.MZ_APP_ACTION_PASTE => appWriteSelection(row_id, false, true) catch return,
-            c.MZ_APP_ACTION_PASTE_PLAIN => appWriteSelection(row_id, true, true) catch return,
+            c.MZ_APP_ACTION_COPY => appWriteSelection(row_id, false, false, 0) catch return,
+            c.MZ_APP_ACTION_PASTE => appWriteSelection(row_id, false, true, target_pid) catch return,
+            c.MZ_APP_ACTION_PASTE_PLAIN => appWriteSelection(row_id, true, true, target_pid) catch return,
             c.MZ_APP_ACTION_REVEAL => appRevealSelection(row_id) catch return,
             c.MZ_APP_ACTION_TOGGLE_PIN => {
                 _ = db.togglePin(row_id) catch return;
@@ -644,10 +644,26 @@ fn appPollClipboard() !void {
     }
 }
 
-fn appWriteSelection(id: i64, plain_only: bool, paste_after: bool) !void {
+fn appWriteSelection(id: i64, plain_only: bool, paste_after: bool, target_pid: c_int) !void {
     const db = g_app_db orelse return;
     try db.writeItemToPasteboard(id, plain_only);
-    if (paste_after and c.mz_ax_is_trusted(0) != 0) c.mz_post_command_v();
+    const ax_trusted = c.mz_ax_is_trusted(0) != 0;
+    std.debug.print(
+        "appWriteSelection rowID={d} plain={any} paste_after={any} ax_trusted={any} target_pid={d}\n",
+        .{ id, plain_only, paste_after, ax_trusted, target_pid },
+    );
+    if (paste_after) {
+        const can_post_event = ax_trusted or c.mz_ax_is_trusted(1) != 0;
+        if (!can_post_event) {
+            std.debug.print(
+                "  ⚠️  ⌘V NOT posted: Accessibility permission missing for /Applications/Maccy.app. " ++
+                    "Open System Settings → Privacy & Security → Accessibility and re-add the app.\n",
+                .{},
+            );
+            return;
+        }
+        c.mz_post_command_v_to_pid(target_pid);
+    }
 }
 
 fn appRevealSelection(id: i64) !void {

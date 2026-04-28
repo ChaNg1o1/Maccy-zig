@@ -38,13 +38,13 @@ typedef enum MZAppAction {
   MZ_APP_ACTION_REVEAL = 8,
 } MZAppAction;
 
-typedef void (*MZAppActionCallback)(MZAppAction action, int64_t row_id);
+typedef void (*MZAppActionCallback)(MZAppAction action, int64_t row_id, int target_pid);
 
 typedef struct MZAppCallbacks {
   void (*on_toggle)(void);
   void (*on_poll)(void);
   void (*on_search)(const char *query);
-  void (*on_select)(int64_t id, int paste);
+  void (*on_select)(int64_t id, int paste, int target_pid);
   void (*on_clear)(int all);
   void (*on_quit)(void);
   void (*on_max_items_change)(int64_t max_items);

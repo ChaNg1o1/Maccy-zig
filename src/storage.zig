@@ -22,12 +22,38 @@ pub const ContentKind = enum(c_int) {
 
 pub const Db = struct {
     handle: *sqlite.sqlite3,
+    cached: [@typeInfo(CachedKey).@"enum".fields.len]?*sqlite.sqlite3_stmt = .{null} ** @typeInfo(CachedKey).@"enum".fields.len,
     const pinned_marker = "pinned";
 
     pub const UpsertOutcome = enum {
         inserted,
         duplicate,
     };
+
+    /// Hot statements that get prepared once per connection and reused via
+    /// `sqlite3_reset` + `sqlite3_clear_bindings`. Keep in sync with
+    /// `cachedSqlFor` below.
+    pub const CachedKey = enum(u8) {
+        update_duplicate,
+        insert_history_item,
+        insert_history_content,
+        prune_capacity,
+    };
+
+    fn cachedSqlFor(key: CachedKey) [:0]const u8 {
+        return switch (key) {
+            .update_duplicate => "UPDATE history_items SET last_copied_at=?1, copy_count=copy_count+1 WHERE hash=?2;",
+            .insert_history_item => "INSERT INTO history_items(hash,title,app,first_copied_at,last_copied_at,copy_count,content_kind) VALUES(?1,?2,?3,?4,?5,1,?6);",
+            .insert_history_content => "INSERT INTO history_contents(item_id,type,value) VALUES(?1,?2,?3);",
+            .prune_capacity =>
+                \\DELETE FROM history_items
+                \\WHERE pin IS NULL AND id IN (
+                \\  SELECT id FROM history_items WHERE pin IS NULL
+                \\  ORDER BY last_copied_at DESC LIMIT -1 OFFSET ?1
+                \\);
+            ,
+        };
+    }
 
     pub fn open(path: []const u8) !Db {
         var db: ?*sqlite.sqlite3 = null;
@@ -38,7 +64,24 @@ pub const Db = struct {
     }
 
     pub fn close(self: *Db) void {
+        for (self.cached, 0..) |maybe, idx| {
+            if (maybe) |stmt| _ = sqlite.sqlite3_finalize(stmt);
+            self.cached[idx] = null;
+        }
         _ = sqlite.sqlite3_close(self.handle);
+    }
+
+    /// Returns a reset, fresh-bound cached statement. Caller must NOT finalize.
+    fn cachedStmt(self: *Db, key: CachedKey) !*sqlite.sqlite3_stmt {
+        const idx = @intFromEnum(key);
+        if (self.cached[idx]) |stmt| {
+            _ = sqlite.sqlite3_reset(stmt);
+            _ = sqlite.sqlite3_clear_bindings(stmt);
+            return stmt;
+        }
+        const stmt = try self.prepare(cachedSqlFor(key));
+        self.cached[idx] = stmt;
+        return stmt;
     }
 
     pub fn migrate(self: *Db) !void {
@@ -46,6 +89,13 @@ pub const Db = struct {
             \\PRAGMA journal_mode=WAL;
             \\PRAGMA synchronous=NORMAL;
             \\PRAGMA foreign_keys=ON;
+            \\PRAGMA temp_store=MEMORY;
+            \\PRAGMA cache_size=-32768;
+            \\PRAGMA mmap_size=67108864;
+            \\PRAGMA wal_autocheckpoint=2000;
+            \\PRAGMA journal_size_limit=33554432;
+            \\PRAGMA checkpoint_fullfsync=OFF;
+            \\PRAGMA fullfsync=OFF;
             \\CREATE TABLE IF NOT EXISTS history_items (
             \\  id INTEGER PRIMARY KEY,
             \\  hash TEXT NOT NULL UNIQUE,
@@ -66,6 +116,7 @@ pub const Db = struct {
             \\);
             \\CREATE INDEX IF NOT EXISTS idx_history_items_last ON history_items(last_copied_at DESC);
             \\CREATE INDEX IF NOT EXISTS idx_history_contents_item ON history_contents(item_id);
+            \\CREATE INDEX IF NOT EXISTS idx_history_items_list ON history_items(last_copied_at DESC, id DESC, title, app, copy_count);
         );
         try self.ensureHistoryItemsContentKind();
         try self.ensureHistoryItemsPinOrder();
@@ -86,8 +137,7 @@ pub const Db = struct {
         try self.exec("BEGIN IMMEDIATE;");
         errdefer self.exec("ROLLBACK;") catch {};
 
-        const stmt = try self.prepare("INSERT INTO history_items(hash,title,app,first_copied_at,last_copied_at,copy_count,content_kind) VALUES(?1,?2,?3,?4,?5,1,?6);");
-        defer _ = sqlite.sqlite3_finalize(stmt);
+        const stmt = try self.cachedStmt(.insert_history_item);
         try bindText(stmt, 1, hash_hex[0..]);
         try bindText(stmt, 2, std.mem.sliceTo(title_buf, 0));
         try bindText(stmt, 3, app);
@@ -97,11 +147,8 @@ pub const Db = struct {
         try stepDone(stmt);
 
         const item_id = sqlite.sqlite3_last_insert_rowid(self.handle);
-        const cstmt = try self.prepare("INSERT INTO history_contents(item_id,type,value) VALUES(?1,?2,?3);");
-        defer _ = sqlite.sqlite3_finalize(cstmt);
         for (blobs) |blob| {
-            _ = sqlite.sqlite3_reset(cstmt);
-            _ = sqlite.sqlite3_clear_bindings(cstmt);
+            const cstmt = try self.cachedStmt(.insert_history_content);
             _ = sqlite.sqlite3_bind_int64(cstmt, 1, item_id);
             try bindText(cstmt, 2, blob.ty);
             try bindBlob(cstmt, 3, blob.data);
@@ -145,8 +192,7 @@ pub const Db = struct {
     }
 
     fn updateDuplicate(self: *Db, hash_hex: *const [64]u8, now: i64) !bool {
-        const stmt = try self.prepare("UPDATE history_items SET last_copied_at=?1, copy_count=copy_count+1 WHERE hash=?2;");
-        defer _ = sqlite.sqlite3_finalize(stmt);
+        const stmt = try self.cachedStmt(.update_duplicate);
         _ = sqlite.sqlite3_bind_int64(stmt, 1, now);
         try bindText(stmt, 2, hash_hex[0..]);
         try stepDone(stmt);
@@ -154,14 +200,7 @@ pub const Db = struct {
     }
 
     pub fn prune(self: *Db, max_items: i64) !i64 {
-        const stmt = try self.prepare(
-            \\DELETE FROM history_items
-            \\WHERE pin IS NULL AND id IN (
-            \\  SELECT id FROM history_items WHERE pin IS NULL
-            \\  ORDER BY last_copied_at DESC LIMIT -1 OFFSET ?1
-            \\);
-        );
-        defer _ = sqlite.sqlite3_finalize(stmt);
+        const stmt = try self.cachedStmt(.prune_capacity);
         _ = sqlite.sqlite3_bind_int64(stmt, 1, max_items);
         try stepDone(stmt);
         return @intCast(sqlite.sqlite3_changes(self.handle));
@@ -323,10 +362,40 @@ pub const Db = struct {
         return stmt.?;
     }
 
+    /// Bump whenever `classifyContentKind` semantics change so existing rows
+    /// get reclassified on next launch (via `PRAGMA user_version`).
+    /// History:
+    ///   1 — initial classify rules (added with the column)
+    ///   2 — link requires explicit public.url / http(s) title; html/url-name no
+    ///       longer flag a row as a link
+    const CLASSIFY_RULES_VERSION: i64 = 2;
+
     fn ensureHistoryItemsContentKind(self: *Db) !void {
-        if (try self.tableHasColumn("history_items", "content_kind")) return;
-        try self.exec("ALTER TABLE history_items ADD COLUMN content_kind INTEGER NOT NULL DEFAULT 5;");
-        try self.backfillHistoryItemsContentKind();
+        const had_column = try self.tableHasColumn("history_items", "content_kind");
+        if (!had_column) {
+            try self.exec("ALTER TABLE history_items ADD COLUMN content_kind INTEGER NOT NULL DEFAULT 5;");
+            try self.backfillHistoryItemsContentKind();
+            try self.setUserVersion(CLASSIFY_RULES_VERSION);
+            return;
+        }
+        const stored = try self.userVersion();
+        if (stored < CLASSIFY_RULES_VERSION) {
+            try self.backfillHistoryItemsContentKind();
+            try self.setUserVersion(CLASSIFY_RULES_VERSION);
+        }
+    }
+
+    fn userVersion(self: *Db) !i64 {
+        const stmt = try self.prepare("PRAGMA user_version;");
+        defer _ = sqlite.sqlite3_finalize(stmt);
+        if (sqlite.sqlite3_step(stmt) != sqlite.SQLITE_ROW) return 0;
+        return sqlite.sqlite3_column_int64(stmt, 0);
+    }
+
+    fn setUserVersion(self: *Db, value: i64) !void {
+        var sql_buf: [64]u8 = undefined;
+        const sql = try std.fmt.bufPrintZ(&sql_buf, "PRAGMA user_version = {d};", .{value});
+        try self.exec(sql);
     }
 
     fn ensureHistoryItemsPinOrder(self: *Db) !void {
@@ -349,6 +418,9 @@ pub const Db = struct {
     }
 
     fn backfillHistoryItemsContentKind(self: *Db) !void {
+        // Priority and rules must mirror `classifyContentKind` above; the test
+        // "classifyContentKind uses the same priority as the app query" guards
+        // against drift between the two.
         try self.exec(
             \\UPDATE history_items
             \\SET content_kind = CASE
@@ -363,11 +435,16 @@ pub const Db = struct {
             \\  ) THEN 4
             \\  WHEN title LIKE 'http://%' OR title LIKE 'https://%' OR EXISTS(
             \\    SELECT 1 FROM history_contents c
-            \\    WHERE c.item_id=history_items.id AND (c.type LIKE '%url%' OR c.type LIKE '%html%')
+            \\    WHERE c.item_id=history_items.id AND c.type='public.url'
             \\  ) THEN 2
             \\  WHEN EXISTS(
             \\    SELECT 1 FROM history_contents c
-            \\    WHERE c.item_id=history_items.id AND (c.type='public.utf8-plain-text' OR c.type LIKE '%rtf%' OR c.type LIKE '%text%')
+            \\    WHERE c.item_id=history_items.id
+            \\      AND (c.type='public.utf8-plain-text'
+            \\           OR c.type LIKE '%rtf%'
+            \\           OR c.type LIKE '%text%'
+            \\           OR c.type LIKE '%html%'
+            \\           OR c.type LIKE '%url-name%')
             \\  ) THEN 1
             \\  ELSE 5
             \\END;
@@ -384,19 +461,33 @@ pub const Db = struct {
 };
 
 pub fn classifyContentKind(blobs: []const BlobView, title: []const u8) ContentKind {
+    // Priority: image > file > link > text > other.
+    //
+    // "Link" must be a real, paste-as-URL value -- not "anything that happens to
+    // carry HTML markup or a URL display name". Otherwise plain rich-text copies
+    // from Lark/Slack/web pages get mis-bucketed into the Links tab. We therefore
+    // require either an explicit `public.url` flavor or a plain-text payload that
+    // is itself a URL (title starts with http:// or https://).
     var saw_file = false;
-    var saw_link = startsWithHttpScheme(title);
+    var saw_explicit_url = false;
     var saw_text = false;
 
     for (blobs) |blob| {
         if (isImageType(blob.ty)) return .image;
         if (std.mem.eql(u8, blob.ty, "public.file-url")) saw_file = true;
-        if (std.mem.indexOf(u8, blob.ty, "url") != null or std.mem.indexOf(u8, blob.ty, "html") != null) saw_link = true;
-        if (std.mem.eql(u8, blob.ty, "public.utf8-plain-text") or std.mem.indexOf(u8, blob.ty, "rtf") != null or std.mem.indexOf(u8, blob.ty, "text") != null) saw_text = true;
+        if (std.mem.eql(u8, blob.ty, "public.url")) saw_explicit_url = true;
+        if (std.mem.eql(u8, blob.ty, "public.utf8-plain-text") or
+            std.mem.indexOf(u8, blob.ty, "rtf") != null or
+            std.mem.indexOf(u8, blob.ty, "text") != null or
+            std.mem.indexOf(u8, blob.ty, "html") != null or
+            std.mem.indexOf(u8, blob.ty, "url-name") != null)
+        {
+            saw_text = true;
+        }
     }
 
     if (saw_file) return .file;
-    if (saw_link) return .link;
+    if (saw_explicit_url or startsWithHttpScheme(title)) return .link;
     if (saw_text) return .text;
     return .other;
 }
@@ -552,9 +643,25 @@ test "classifyContentKind uses the same priority as the app query" {
     const file = [_]BlobView{.{ .ty = "public.file-url", .data = "file:///tmp/a" }};
     try std.testing.expectEqual(ContentKind.file, classifyContentKind(&file, "note"));
 
-    const link = [_]BlobView{.{ .ty = "public.html", .data = "<a href='x'>x</a>" }};
-    try std.testing.expectEqual(ContentKind.link, classifyContentKind(&link, "note"));
+    // Real URL flavors and URL-shaped titles count as links.
+    const explicit_url = [_]BlobView{.{ .ty = "public.url", .data = "https://x" }};
+    try std.testing.expectEqual(ContentKind.link, classifyContentKind(&explicit_url, "note"));
     try std.testing.expectEqual(ContentKind.link, classifyContentKind(&[_]BlobView{}, "https://example.com"));
+
+    // Rich-text payloads (HTML/url-name) carrying plain content must NOT be
+    // mis-classified as links — that's what put "iOS可上云手机测试。" into the
+    // Links tab when copied from a chat app.
+    const html_only = [_]BlobView{
+        .{ .ty = "public.html", .data = "<p>iOS 可上云手机测试。</p>" },
+        .{ .ty = "public.utf8-plain-text", .data = "iOS 可上云手机测试。" },
+    };
+    try std.testing.expectEqual(ContentKind.text, classifyContentKind(&html_only, "iOS 可上云手机测试。"));
+
+    const url_name_only = [_]BlobView{
+        .{ .ty = "public.url-name", .data = "Some Title" },
+        .{ .ty = "public.utf8-plain-text", .data = "Some Title" },
+    };
+    try std.testing.expectEqual(ContentKind.text, classifyContentKind(&url_name_only, "Some Title"));
 
     const text = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = "hello" }};
     try std.testing.expectEqual(ContentKind.text, classifyContentKind(&text, "hello"));
@@ -640,6 +747,57 @@ test "migrate backfills legacy content kind and pin order" {
 
     try std.testing.expectEqual(@as(i64, @intFromEnum(ContentKind.image)), try testFetchInt(&db, "SELECT content_kind FROM history_items WHERE id=1;"));
     try std.testing.expectEqual(@as(i64, 42), try testFetchInt(&db, "SELECT pin_order FROM history_items WHERE id=1;"));
+}
+
+test "migrate reclassifies html-only legacy rows away from link bucket" {
+    // Simulate an existing v1 database that previously bucketed html-bearing
+    // rich-text into the Links tab. After migrate() runs against rules v2 the
+    // row should land in the Text bucket instead.
+    var db = try Db.open(":memory:");
+    defer db.close();
+    try db.exec(
+        \\CREATE TABLE history_items (
+        \\  id INTEGER PRIMARY KEY,
+        \\  hash TEXT NOT NULL UNIQUE,
+        \\  title TEXT NOT NULL,
+        \\  app TEXT,
+        \\  first_copied_at INTEGER NOT NULL,
+        \\  last_copied_at INTEGER NOT NULL,
+        \\  copy_count INTEGER NOT NULL DEFAULT 1,
+        \\  content_kind INTEGER NOT NULL DEFAULT 5,
+        \\  pin_order INTEGER,
+        \\  pin TEXT
+        \\);
+        \\CREATE TABLE history_contents (
+        \\  id INTEGER PRIMARY KEY,
+        \\  item_id INTEGER NOT NULL REFERENCES history_items(id) ON DELETE CASCADE,
+        \\  type TEXT NOT NULL,
+        \\  value BLOB NOT NULL
+        \\);
+        \\PRAGMA user_version = 1;
+        \\INSERT INTO history_items(id, hash, title, first_copied_at, last_copied_at, copy_count, content_kind)
+        \\  VALUES(1, 'h1' || hex(zeroblob(31)), 'iOS 可上云手机测试。', 1, 1, 1, 2);
+        \\INSERT INTO history_contents(item_id, type, value) VALUES(1, 'public.html', X'68746D6C');
+        \\INSERT INTO history_contents(item_id, type, value) VALUES(1, 'public.utf8-plain-text', X'74657874');
+        \\INSERT INTO history_items(id, hash, title, first_copied_at, last_copied_at, copy_count, content_kind)
+        \\  VALUES(2, 'h2' || hex(zeroblob(31)), 'https://example.com', 1, 1, 1, 2);
+        \\INSERT INTO history_contents(item_id, type, value) VALUES(2, 'public.url', X'68747470733A2F2F6578616D706C652E636F6D');
+    );
+
+    try db.migrate();
+
+    try std.testing.expectEqual(
+        @as(i64, @intFromEnum(ContentKind.text)),
+        try testFetchInt(&db, "SELECT content_kind FROM history_items WHERE id=1;"),
+    );
+    try std.testing.expectEqual(
+        @as(i64, @intFromEnum(ContentKind.link)),
+        try testFetchInt(&db, "SELECT content_kind FROM history_items WHERE id=2;"),
+    );
+    try std.testing.expectEqual(
+        @as(i64, 2),
+        try testFetchInt(&db, "PRAGMA user_version;"),
+    );
 }
 
 test "readImagePreview returns first image blob" {

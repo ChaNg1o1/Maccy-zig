@@ -1,5 +1,7 @@
 #import "macos_app.h"
 #import <AppKit/AppKit.h>
+#import <QuartzCore/QuartzCore.h>
+#import <mach/mach_time.h>
 #import <stdarg.h>
 
 typedef NS_ENUM(NSInteger, MZFilterMode) {
@@ -178,6 +180,25 @@ static NSTextField *mz_label(NSString *text, NSFont *font, NSColor *color) {
 @end
 
 @implementation MZCenteredTextFieldCell
+// Hard-disable every focus-ring path AppKit might take. macOS 14+ paints a
+// system keyboard-navigation accent ring on top of the cell that ignores
+// NSTextField.focusRingType; covering the cell-side hooks is what actually
+// stops it from drawing.
+- (void)drawFocusRingMaskWithFrame:(NSRect)cellFrame inView:(NSView *)controlView {
+  (void)cellFrame;
+  (void)controlView;
+}
+
+- (NSRect)focusRingMaskBoundsForFrame:(NSRect)cellFrame inView:(NSView *)controlView {
+  (void)cellFrame;
+  (void)controlView;
+  return NSZeroRect;
+}
+
+- (NSFocusRingType)focusRingType {
+  return NSFocusRingTypeNone;
+}
+
 - (NSRect)mz_centeredDrawingRectForBounds:(NSRect)rect {
   NSRect drawingRect = [super drawingRectForBounds:rect];
   NSSize cellSize = [self cellSizeForBounds:rect];
@@ -225,6 +246,10 @@ static void mz_center_text_field_vertically(NSTextField *field) {
   cell.backgroundColor = field.backgroundColor;
   cell.drawsBackground = field.drawsBackground;
   cell.bordered = field.bordered;
+  // Mirror bezeled on the cell as well — NSTextField forwards drawing through
+  // its cell, and a bezeled cell will still paint focus chrome even when the
+  // owning field has bezeled=NO.
+  cell.bezeled = field.isBezeled;
   cell.editable = field.editable;
   cell.selectable = field.selectable;
   cell.alignment = field.alignment;
@@ -561,12 +586,15 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
 @property(nonatomic, strong) NSTrackingArea *previewTrackingArea;
 @property(nonatomic, strong) NSPopover *previewPopover;
 @property(nonatomic) BOOL previewEnabled;
+@property(nonatomic) NSInteger rowIndex;
 @property(nonatomic, weak) id interactionTarget;
 - (void)configureWithRow:(MZRow *)row
                 selected:(BOOL)selected
                   target:(id)target
                     icon:(NSImage *)icon
             revealEnabled:(BOOL)revealEnabled;
+- (void)applySelectedAppearance:(BOOL)selected;
+- (void)dismissImagePreview;
 @end
 
 @implementation MZClipboardCellView
@@ -646,29 +674,25 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
   return cache;
 }
 
-- (void)showImagePreviewIfNeeded {
-  if (!self.previewEnabled || self.previewPopover.shown) return;
-  MZRow *row = [self.objectValue isKindOfClass:[MZRow class]] ? self.objectValue : nil;
-  if (row == nil) return;
-
+- (NSViewController *)buildImagePreviewControllerForRow:(MZRow *)row {
   NSNumber *cacheKey = @(row.rowID);
   NSImage *image = [mz_preview_cache() objectForKey:cacheKey];
   if (image == nil) {
     size_t len = 0;
     const unsigned char *bytes = mz_app_copy_image_preview(row.rowID, &len);
-    if (bytes == NULL || len == 0) return;
+    if (bytes == NULL || len == 0) return nil;
 
     NSData *data = [NSData dataWithBytes:bytes length:len];
     mz_app_free_buffer(bytes, len);
     image = [[NSImage alloc] initWithData:data];
-    if (image == nil) return;
+    if (image == nil) return nil;
     [mz_preview_cache() setObject:image forKey:cacheKey cost:(NSUInteger)len];
   }
 
   const CGFloat max_width = 360.0;
   const CGFloat max_height = 260.0;
   NSSize image_size = image.size;
-  if (image_size.width <= 0.0 || image_size.height <= 0.0) return;
+  if (image_size.width <= 0.0 || image_size.height <= 0.0) return nil;
   CGFloat scale = MIN(max_width / image_size.width, max_height / image_size.height);
   if (scale > 1.0) scale = 1.0;
   NSSize display_size = NSMakeSize(MAX(1.0, floor(image_size.width * scale)), MAX(1.0, floor(image_size.height * scale)));
@@ -687,6 +711,95 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
   preview.imageScaling = NSImageScaleProportionallyUpOrDown;
   [content addSubview:preview];
   controller.view = content;
+  controller.preferredContentSize = content.frame.size;
+  return controller;
+}
+
+// Read-only text preview popover for non-image rows. Sized tightly to the
+// content (so a one-line title doesn't get a 600px-tall popover), capped at
+// a sane max height with vertical scrolling for long bodies, and styled to
+// match the surrounding panel chrome.
+- (NSViewController *)buildTextPreviewControllerForRow:(MZRow *)row {
+  NSString *body = row.title ?: @"";
+  if (body.length == 0) return nil;
+
+  const CGFloat width = 360.0;
+  const CGFloat max_height = 200.0;
+  const CGFloat horizontal_padding = 12.0;
+  const CGFloat vertical_padding = 10.0;
+
+  NSFont *font = [NSFont systemFontOfSize:13 weight:NSFontWeightRegular];
+  NSDictionary<NSAttributedStringKey, id> *attrs = @{
+    NSFontAttributeName : font,
+    NSForegroundColorAttributeName : mz_text_primary(),
+  };
+  CGFloat textWidth = width - horizontal_padding * 2.0;
+  NSRect bounding = [body boundingRectWithSize:NSMakeSize(textWidth, CGFLOAT_MAX)
+                                       options:NSStringDrawingUsesLineFragmentOrigin |
+                                               NSStringDrawingUsesFontLeading
+                                    attributes:attrs];
+  CGFloat measured = ceil(NSHeight(bounding));
+  CGFloat single_line = ceil(font.ascender - font.descender + font.leading);
+  CGFloat text_area = MIN(max_height - vertical_padding * 2.0,
+                          MAX(single_line, measured));
+  CGFloat content_height = ceil(text_area + vertical_padding * 2.0);
+
+  NSViewController *controller = [NSViewController new];
+  NSView *content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, content_height)];
+  content.wantsLayer = YES;
+  content.layer.cornerRadius = 10.0;
+  content.layer.masksToBounds = YES;
+
+  NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(horizontal_padding, vertical_padding,
+                                                                        textWidth,
+                                                                        text_area)];
+  scroll.borderType = NSNoBorder;
+  scroll.hasVerticalScroller = YES;
+  scroll.hasHorizontalScroller = NO;
+  scroll.autohidesScrollers = YES;
+  scroll.drawsBackground = NO;
+  scroll.backgroundColor = NSColor.clearColor;
+  scroll.scrollerStyle = NSScrollerStyleOverlay;
+
+  NSTextView *text = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, textWidth, text_area)];
+  text.editable = NO;
+  text.selectable = YES;
+  text.drawsBackground = NO;
+  text.backgroundColor = NSColor.clearColor;
+  text.textContainerInset = NSMakeSize(0, 0);
+  text.font = font;
+  text.textColor = mz_text_primary();
+  text.string = body;
+  text.minSize = NSMakeSize(0, 0);
+  text.maxSize = NSMakeSize(textWidth, CGFLOAT_MAX);
+  text.verticallyResizable = YES;
+  text.horizontallyResizable = NO;
+  text.autoresizingMask = NSViewWidthSizable;
+  text.textContainer.containerSize = NSMakeSize(textWidth, CGFLOAT_MAX);
+  text.textContainer.widthTracksTextView = YES;
+  scroll.documentView = text;
+  [content addSubview:scroll];
+  controller.view = content;
+  // Crucial: NSPopover sizes itself from preferredContentSize. Without this
+  // the inner NSTextView's intrinsic content size dictates a huge popover
+  // even when the visible text is one line.
+  controller.preferredContentSize = NSMakeSize(width, content_height);
+  return controller;
+}
+
+- (void)showImagePreviewIfNeeded {
+  if (!self.previewEnabled || self.previewPopover.shown) return;
+  MZRow *row = [self.objectValue isKindOfClass:[MZRow class]] ? self.objectValue : nil;
+  if (row == nil) return;
+
+  // Image rows render the decoded thumbnail; everything else (text, link,
+  // file, other) gets a scrollable text preview so users can see the full
+  // title even when the cell truncates it.
+  BOOL useImage = (row.contentKind == MZ_APP_CONTENT_IMAGE) || row.hasImage;
+  NSViewController *controller = useImage
+      ? [self buildImagePreviewControllerForRow:row]
+      : [self buildTextPreviewControllerForRow:row];
+  if (controller == nil) return;
 
   if (self.previewPopover == nil) {
     self.previewPopover = [NSPopover new];
@@ -700,6 +813,7 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
 - (instancetype)initWithFrame:(NSRect)frameRect {
   if ((self = [super initWithFrame:frameRect])) {
     self.wantsLayer = YES;
+    _rowIndex = -1;
 
     _rowContainer = [[NSView alloc] initWithFrame:NSZeroRect];
     _rowContainer.wantsLayer = YES;
@@ -773,17 +887,40 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
   self.rowButton.action = @selector(pasteRow:);
   self.rowButton.rowID = row.rowID;
 
-  self.rowContainer.layer.backgroundColor = (selected ? mz_selected_fill() : NSColor.clearColor).CGColor;
-  self.rowContainer.layer.borderColor = (selected ? mz_selected_border() : NSColor.clearColor).CGColor;
-  self.rowContainer.layer.borderWidth = selected ? 1.0 : 0.0;
+  [self applySelectedAppearance:selected];
   self.dividerView.hidden = NO;
   self.subtitleLabel.textColor = mz_text_secondary();
   self.timeLabel.textColor = mz_text_secondary();
-  self.previewEnabled = row.hasImage || row.contentKind == MZ_APP_CONTENT_IMAGE;
-  if (!self.previewEnabled) [self dismissImagePreview];
+  BOOL preview_was_enabled = self.previewEnabled;
+  // Every row is hover-previewable: image rows show the decoded thumbnail,
+  // text/link/file/other rows show a scrollable read-only text popover with
+  // the full (un-truncated) title.
+  self.previewEnabled = YES;
 
   [self setNeedsLayout:YES];
-  [self updateTrackingAreas];
+  // Force layout *now* rather than next display tick. Otherwise the
+  // virtualized reuse path can serve a freshly-dequeued cell whose
+  // favoriteButton.frame is still NSZeroRect (or stale from the previous
+  // row), making mz_activate_row_at_event miss favorite clicks because the
+  // hit-test runs in the same mouseDown turn as configureWithRow.
+  [self layoutSubtreeIfNeeded];
+  if (preview_was_enabled != self.previewEnabled || self.previewTrackingArea == nil) {
+    [self updateTrackingAreas];
+  }
+}
+
+// Fast-path used by selection switches: only the rowContainer layer attrs
+// change, so we skip the full configureWithRow rebuild (title/subtitle/icon/
+// time/buttons/trackingArea) and avoid the surrounding layout pass.
+- (void)applySelectedAppearance:(BOOL)selected {
+  CGColorRef fill = (selected ? mz_selected_fill() : NSColor.clearColor).CGColor;
+  CGColorRef border = (selected ? mz_selected_border() : NSColor.clearColor).CGColor;
+  CGFloat border_width = selected ? 1.0 : 0.0;
+  CALayer *layer = self.rowContainer.layer;
+  if (layer == nil) return;
+  if (!CGColorEqualToColor(layer.backgroundColor, fill)) layer.backgroundColor = fill;
+  if (!CGColorEqualToColor(layer.borderColor, border)) layer.borderColor = border;
+  if (layer.borderWidth != border_width) layer.borderWidth = border_width;
 }
 
 - (NSView *)hitTest:(NSPoint)point {
@@ -839,6 +976,7 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
 
 - (void)mouseMoved:(NSEvent *)event {
   (void)event;
+  if (self.previewPopover.shown) return;
   [self showImagePreviewIfNeeded];
 }
 
@@ -897,12 +1035,20 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 
     MZClipboardCellView *rowView = (MZClipboardCellView *)subview;
     MZRow *row = [rowView.objectValue isKindOfClass:[MZRow class]] ? rowView.objectValue : nil;
+    // Make absolutely sure subview frames (favoriteButton, action bar, etc.)
+    // are up-to-date before we hit-test against them. Cheap when nothing is
+    // pending, critical when this is the same turn the cell was reused.
+    [rowView layoutSubtreeIfNeeded];
     NSPoint rowPoint = [rowView convertPoint:event.locationInWindow fromView:nil];
-    mz_debug_log(@"activate_row matched rowID=%lld title=%@ rowPoint=(%.1f,%.1f)",
+    mz_debug_log(@"activate_row matched rowID=%lld title=%@ rowPoint=(%.1f,%.1f) favFrame=(%.1f,%.1f,%.1f,%.1f)",
                  row ? row.rowID : 0,
                  row ? row.title : @"<nil>",
                  rowPoint.x,
-                 rowPoint.y);
+                 rowPoint.y,
+                 rowView.favoriteButton.frame.origin.x,
+                 rowView.favoriteButton.frame.origin.y,
+                 rowView.favoriteButton.frame.size.width,
+                 rowView.favoriteButton.frame.size.height);
 
     if (mz_point_hits_view(rowView, rowView.favoriteButton, rowPoint)) {
       [rowView.favoriteButton performClick:nil];
@@ -1028,6 +1174,7 @@ static const CGFloat kMZPanelMinHeight = 460.0;
 @property(nonatomic, strong) NSMutableArray<MZRow *> *allRows;
 @property(nonatomic, strong) NSMutableArray<MZRow *> *rows;
 @property(nonatomic, strong) NSMutableArray<MZClipboardCellView *> *itemViews;
+@property(nonatomic, strong) NSMutableArray<MZClipboardCellView *> *reusableItemViews;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSImage *> *iconCache;
 @property(nonatomic, strong) NSMutableArray<NSButton *> *filterButtons;
 @property(nonatomic, strong) NSTextField *countLabel;
@@ -1050,6 +1197,7 @@ static const CGFloat kMZPanelMinHeight = 460.0;
 @property(nonatomic, strong) NSView *listCard;
 @property(nonatomic, strong) NSView *clearHint;
 @property(nonatomic) MZFilterMode filterMode;
+@property(nonatomic) NSUInteger filterChangeGeneration;
 @property(nonatomic) NSInteger selectedRowIndex;
 @property(nonatomic) NSInteger maxItemsLimit;
 @property(nonatomic) BOOL windowPinned;
@@ -1059,19 +1207,38 @@ static MZAppController *gController = nil;
 static const CGFloat kMZListTopPadding = 8.0;
 static const CGFloat kMZListBottomPadding = 8.0;
 
+static int mz_app_target_pid_for_action(MZAppController *controller, MZAppAction action) {
+  switch (action) {
+    case MZ_APP_ACTION_PASTE:
+    case MZ_APP_ACTION_PASTE_PLAIN:
+      return controller.previousFrontmostApp != nil ? (int)controller.previousFrontmostApp.processIdentifier : 0;
+    default:
+      return 0;
+  }
+}
+
 static void mz_app_dispatch_action(MZAppController *controller, MZAppAction action, int64_t rowID) {
+  int target_pid = mz_app_target_pid_for_action(controller, action);
   if (controller.actionCallback != NULL) {
-    controller.actionCallback(action, rowID);
+    controller.actionCallback(action, rowID, target_pid);
     return;
   }
 
   switch (action) {
     case MZ_APP_ACTION_COPY:
-      if (controller.callbacks.on_select) controller.callbacks.on_select(rowID, 0);
+      if (controller.callbacks.on_select) controller.callbacks.on_select(rowID, 0, 0);
       return;
-    case MZ_APP_ACTION_PASTE:
-      if (controller.callbacks.on_select) controller.callbacks.on_select(rowID, 1);
+    case MZ_APP_ACTION_PASTE: {
+      // The previous frontmost app was captured in -show; passing its pid
+      // through to the paste path lets us route ⌘V directly to that process
+      // and bypass the frontmost-app race entirely.
+      if (controller.callbacks.on_select) controller.callbacks.on_select(rowID, 1, target_pid);
       return;
+    }
+    case MZ_APP_ACTION_PASTE_PLAIN: {
+      if (controller.callbacks.on_select) controller.callbacks.on_select(rowID, 1, target_pid);
+      return;
+    }
     case MZ_APP_ACTION_CLEAR_UNPINNED:
       if (controller.callbacks.on_clear) controller.callbacks.on_clear(0);
       return;
@@ -1095,6 +1262,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     _allRows = [NSMutableArray array];
     _rows = [NSMutableArray array];
     _itemViews = [NSMutableArray array];
+    _reusableItemViews = [NSMutableArray array];
     _iconCache = [NSMutableDictionary dictionary];
     _filterButtons = [NSMutableArray array];
     _tabDividers = [NSMutableArray array];
@@ -1141,6 +1309,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 
 - (void)dealloc {
   if (self.keyEventMonitor != nil) [NSEvent removeMonitor:self.keyEventMonitor];
+  [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
 - (void)pollTimer:(NSTimer *)timer {
@@ -1239,10 +1408,26 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   self.searchField.textColor = mz_text_primary();
   self.searchField.drawsBackground = NO;
   self.searchField.backgroundColor = NSColor.clearColor;
+  // bordered + bezeled both off: prevents AppKit from painting both the
+  // legacy bezel chrome AND the macOS 14+ system keyboard-navigation accent
+  // ring, neither of which lines up with our custom searchBox container.
+  // focusRingType is honored only when bezeled=NO.
   self.searchField.bordered = NO;
+  self.searchField.bezeled = NO;
   self.searchField.focusRingType = NSFocusRingTypeNone;
   self.searchField.autoresizingMask = NSViewWidthSizable;
+  // Explicitly editable + selectable so ⌘A / ⌘C / ⌘V / drag-select all work
+  // inside the search box. NSTextField defaults flip depending on which
+  // initialiser path is used and silently break text selection otherwise.
+  self.searchField.editable = YES;
+  self.searchField.selectable = YES;
+  self.searchField.allowsEditingTextAttributes = NO;
   mz_center_text_field_vertically(self.searchField);
+  // Re-assert on the freshly installed cell — the helper copies whatever the
+  // field happened to have at that moment, so this guarantees the cell ends
+  // up editable/selectable too.
+  self.searchField.cell.editable = YES;
+  self.searchField.cell.selectable = YES;
   [self.searchBox addSubview:self.searchField];
 
   self.searchHint = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -1321,6 +1506,11 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   self.listContentView.interactionTarget = self;
   self.listContentView.autoresizingMask = NSViewWidthSizable;
   self.listScrollView.documentView = self.listContentView;
+  self.listScrollView.contentView.postsBoundsChangedNotifications = YES;
+  [NSNotificationCenter.defaultCenter addObserver:self
+                                         selector:@selector(listScrollViewDidScroll:)
+                                             name:NSViewBoundsDidChangeNotification
+                                           object:self.listScrollView.contentView];
 
   NSImageView *countIcon = [[NSImageView alloc] initWithFrame:NSMakeRect(outerMargin + contentInset, 25.5, 18, 18)];
   countIcon.image = mz_symbol_image(@"checkmark.circle", 16.0);
@@ -1581,6 +1771,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   button.accentCorner = tag == MZFilterModeAll;
   button.target = self;
   button.action = @selector(changeFilter:);
+  [button sendActionOn:NSEventMaskLeftMouseDown];
   return button;
 }
 
@@ -1627,13 +1818,42 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     self.previousFrontmostApp = frontmost;
   }
 
+  // Reset interaction state every time the panel is summoned. Users expect a
+  // fresh "top of history, ready to type" view -- not whatever row/search was
+  // left over from the previous session.
+  if (self.searchField.stringValue.length > 0) {
+    self.searchField.stringValue = @"";
+    if (self.callbacks.on_search) self.callbacks.on_search("");
+  }
+  // Force a visual refresh of the selection even if the controller already had
+  // row 0 marked selected (selectRowAtIndex early-returns when nothing changes).
+  // Resetting to -1 first guarantees `updateItemViewAtIndex` repaints the cell's
+  // selected border every time the panel pops open.
+  self.selectedRowIndex = -1;
+  if (self.rows.count > 0) {
+    [self selectRowAtIndex:0 focusList:NO];
+  }
+
+  // We need the app active so the search field's NSText field-editor can
+  // receive keystrokes (NSEvent local monitors only fire while the app is
+  // active). The frontmost-snap-back issue this *used* to cause for
+  // auto-paste is now addressed by routing the ⌘V keystroke directly to
+  // the previous app's PID via CGEventPostToPid — see mz_post_command_v_to_pid.
   [NSApp activateIgnoringOtherApps:YES];
   [self.panel orderFrontRegardless];
   [self.panel makeKeyAndOrderFront:nil];
-  if (self.rows.count > 0 && self.selectedRowIndex < 0) {
-    [self selectRowAtIndex:0 focusList:NO];
-  }
   [self focusSearchFieldSelectingText:NO];
+
+  // makeKeyAndOrderFront restores any scroll position AppKit autosaved, so the
+  // pin-to-top reset must happen after the panel is on screen. The async
+  // refresh that follows will then call scrollSelectedRowToVisible against
+  // row 0, keeping the document at origin if rows arrived in the meantime.
+  NSClipView *clipView = self.listScrollView.contentView;
+  if (clipView != nil) {
+    [clipView scrollToPoint:NSZeroPoint];
+    [self.listScrollView reflectScrolledClipView:clipView];
+  }
+
   if (self.callbacks.on_toggle) {
     dispatch_async(dispatch_get_main_queue(), ^{
       if (self.callbacks.on_toggle) self.callbacks.on_toggle();
@@ -1677,17 +1897,25 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 
 - (BOOL)performRowAction:(MZAppAction)action rowID:(int64_t)rowID hidesPanel:(BOOL)hidesPanel {
   if (rowID == 0) return NO;
-  mz_debug_log(@"performRowAction action=%d rowID=%lld hides=%d selected=%ld scrollY=%.1f",
+  // Snapshot the previous-frontmost PID *before* hide() runs, since hide()
+  // clears that property on its way out. Stash it back temporarily so the
+  // PASTE branch in mz_app_dispatch_action can read it.
+  NSRunningApplication *snapshot = self.previousFrontmostApp;
+  mz_debug_log(@"performRowAction action=%d rowID=%lld hides=%d selected=%ld scrollY=%.1f prevPid=%d",
                (int)action,
                rowID,
                hidesPanel ? 1 : 0,
                (long)self.selectedRowIndex,
-               self.listScrollView.contentView.documentVisibleRect.origin.y);
+               self.listScrollView.contentView.documentVisibleRect.origin.y,
+               snapshot ? snapshot.processIdentifier : 0);
   if (action == MZ_APP_ACTION_TOGGLE_PIN) {
     [self optimisticallyTogglePinForRowID:rowID];
   }
   if (hidesPanel) [self hide];
+  // Re-pin the snapshot for the duration of dispatch so PASTE can read it.
+  self.previousFrontmostApp = snapshot;
   mz_app_dispatch_action(self, action, rowID);
+  self.previousFrontmostApp = nil;
   return YES;
 }
 
@@ -1701,72 +1929,169 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   return 74.0;
 }
 
-- (void)relayoutItemViews {
-  CGFloat width = self.listScrollView.contentSize.width;
-  CGFloat y = kMZListTopPadding;
-  for (NSUInteger i = 0; i < self.itemViews.count; i++) {
-    MZClipboardCellView *view = self.itemViews[i];
-    CGFloat height = [self rowHeightAtIndex:(NSInteger)i];
-    view.frame = NSMakeRect(0, y, width, height);
-    y += height;
-  }
-  self.listContentView.frame = NSMakeRect(0, 0, width, MAX(y + kMZListBottomPadding, self.listScrollView.contentSize.height));
+- (CGFloat)totalListContentHeight {
+  CGFloat rowHeight = [self rowHeightAtIndex:0];
+  CGFloat contentHeight = kMZListTopPadding + (CGFloat)self.rows.count * rowHeight + kMZListBottomPadding;
+  return MAX(contentHeight, self.listScrollView.contentSize.height);
 }
 
-- (void)reloadItemViews {
+- (NSRect)frameForRowAtIndex:(NSInteger)index {
   CGFloat width = self.listScrollView.contentSize.width;
-  CGFloat y = kMZListTopPadding;
-  NSUInteger desired = self.rows.count;
+  CGFloat rowHeight = [self rowHeightAtIndex:index];
+  CGFloat y = kMZListTopPadding + (CGFloat)index * rowHeight;
+  return NSMakeRect(0, y, width, rowHeight);
+}
 
-  // Trim surplus cells when the new list is shorter; reuse the rest.
-  while (self.itemViews.count > desired) {
-    MZClipboardCellView *spare = self.itemViews.lastObject;
-    [spare removeFromSuperview];
-    [self.itemViews removeLastObject];
+- (MZClipboardCellView *)visibleItemViewForRowIndex:(NSInteger)index {
+  for (MZClipboardCellView *view in self.itemViews) {
+    if (view.rowIndex == index) return view;
+  }
+  return nil;
+}
+
+- (MZClipboardCellView *)dequeueItemView {
+  MZClipboardCellView *view = self.reusableItemViews.lastObject;
+  if (view != nil) {
+    [self.reusableItemViews removeLastObject];
+  } else {
+    view = [[MZClipboardCellView alloc] initWithFrame:NSZeroRect];
+    view.identifier = @"clipboard-item-visible";
+  }
+  if (view.superview != self.listContentView) {
+    [self.listContentView addSubview:view];
+  }
+  [self.itemViews addObject:view];
+  return view;
+}
+
+- (void)recycleVisibleItemAtArrayIndex:(NSUInteger)index {
+  MZClipboardCellView *view = self.itemViews[index];
+  [view dismissImagePreview];
+  view.rowIndex = -1;
+  view.objectValue = nil;
+  view.interactionTarget = nil;
+  [view removeFromSuperview];
+  [self.itemViews removeObjectAtIndex:index];
+  // Keep a small pool: enough for one tall window + overscan, without holding
+  // onto stale view graphs forever after aggressive resizing.
+  if (self.reusableItemViews.count < 64) [self.reusableItemViews addObject:view];
+}
+
+- (void)visibleRowStart:(NSInteger *)start end:(NSInteger *)end {
+  if (self.rows.count == 0 || self.listScrollView == nil) {
+    *start = 0;
+    *end = 0;
+    return;
+  }
+  NSRect visible = self.listScrollView.contentView.documentVisibleRect;
+  CGFloat rowHeight = [self rowHeightAtIndex:0];
+  static const NSInteger kOverscanRows = 4;
+  NSInteger first = (NSInteger)floor((NSMinY(visible) - kMZListTopPadding) / rowHeight) - kOverscanRows;
+  NSInteger last = (NSInteger)ceil((NSMaxY(visible) - kMZListTopPadding) / rowHeight) + kOverscanRows;
+  if (first < 0) first = 0;
+  if (last > (NSInteger)self.rows.count) last = (NSInteger)self.rows.count;
+  if (last < first) last = first;
+  *start = first;
+  *end = last;
+}
+
+- (void)updateVisibleItemViews {
+  uint64_t t0 = mach_absolute_time();
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+
+  CGFloat width = self.listScrollView.contentSize.width;
+  CGFloat height = [self totalListContentHeight];
+  self.listContentView.frame = NSMakeRect(0, 0, width, height);
+
+  NSInteger start = 0;
+  NSInteger end = 0;
+  [self visibleRowStart:&start end:&end];
+
+  for (NSInteger i = (NSInteger)self.itemViews.count - 1; i >= 0; i--) {
+    MZClipboardCellView *view = self.itemViews[(NSUInteger)i];
+    if (view.rowIndex < start || view.rowIndex >= end) {
+      [self recycleVisibleItemAtArrayIndex:(NSUInteger)i];
+    }
   }
 
-  for (NSUInteger i = 0; i < desired; i++) {
-    MZRow *item = self.rows[i];
-    CGFloat height = [self rowHeightAtIndex:(NSInteger)i];
-    NSRect frame = NSMakeRect(0, y, width, height);
-
-    MZClipboardCellView *view;
-    if (i < self.itemViews.count) {
-      view = self.itemViews[i];
-      if (!NSEqualRects(view.frame, frame)) view.frame = frame;
-    } else {
-      view = [[MZClipboardCellView alloc] initWithFrame:frame];
-      view.identifier = [NSString stringWithFormat:@"clipboard-item-%lu", (unsigned long)i];
-      [self.listContentView addSubview:view];
-      [self.itemViews addObject:view];
+  for (NSInteger index = start; index < end; index++) {
+    MZClipboardCellView *view = [self visibleItemViewForRowIndex:index];
+    if (view == nil) {
+      view = [self dequeueItemView];
+      view.rowIndex = index;
     }
 
+    NSRect frame = [self frameForRowAtIndex:index];
+    if (!NSEqualRects(view.frame, frame)) view.frame = frame;
+    MZRow *item = self.rows[(NSUInteger)index];
     [view configureWithRow:item
-                  selected:((NSInteger)i == self.selectedRowIndex)
+                  selected:(index == self.selectedRowIndex)
                     target:self
                       icon:[self iconForRow:item]
               revealEnabled:[self rowSupportsReveal:item]];
-    y += height;
   }
-  self.listContentView.frame = NSMakeRect(0, 0, width, MAX(y + kMZListBottomPadding, self.listScrollView.contentSize.height));
+
+  [CATransaction commit];
+  static mach_timebase_info_data_t tb = {0, 0};
+  if (tb.denom == 0) mach_timebase_info(&tb);
+  uint64_t ns = (mach_absolute_time() - t0) * tb.numer / tb.denom;
+  mz_debug_log(@"visible_item_views_ns=%llu rows=%lu visible=%ld-%ld views=%lu reuse=%lu",
+               (unsigned long long)ns,
+               (unsigned long)self.rows.count,
+               (long)start,
+               (long)end,
+               (unsigned long)self.itemViews.count,
+               (unsigned long)self.reusableItemViews.count);
+}
+
+- (void)listScrollViewDidScroll:(NSNotification *)notification {
+  (void)notification;
+  [self updateVisibleItemViews];
+}
+
+- (void)relayoutItemViews {
+  [self updateVisibleItemViews];
+}
+
+- (void)reloadItemViews {
+  // Tab/filter switches funnel through here and historically triggered an
+  // O(N) configureWithRow per cell with implicit Core Animation transactions,
+  // which on N≈200 rows pushed visible repaint into 50–200ms territory.
+  // Wrap the rebuild in a single transaction with disabled actions to skip
+  // CALayer animation queueing, and batch the timing in a debug log so we
+  // can sanity-check the path on a real device.
+  uint64_t t0 = mach_absolute_time();
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+
+  [self updateVisibleItemViews];
+
+  [CATransaction commit];
+  static mach_timebase_info_data_t tb = {0, 0};
+  if (tb.denom == 0) mach_timebase_info(&tb);
+  uint64_t ns = (mach_absolute_time() - t0) * tb.numer / tb.denom;
+  mz_debug_log(@"reload_item_views_ns=%llu rows=%lu",
+               (unsigned long long)ns, (unsigned long)self.rows.count);
 }
 
 - (void)refreshVisibleSelectionState {
   for (NSUInteger i = 0; i < self.itemViews.count; i++) {
     MZClipboardCellView *view = self.itemViews[i];
-    MZRow *item = self.rows[i];
+    if (view.rowIndex < 0 || view.rowIndex >= (NSInteger)self.rows.count) continue;
+    MZRow *item = self.rows[(NSUInteger)view.rowIndex];
     [view configureWithRow:item
-                  selected:((NSInteger)i == self.selectedRowIndex)
+                  selected:(view.rowIndex == self.selectedRowIndex)
                     target:self
                       icon:[self iconForRow:item]
               revealEnabled:[self rowSupportsReveal:item]];
   }
-  [self relayoutItemViews];
 }
 
 - (void)updateItemViewAtIndex:(NSInteger)index {
-  if (index < 0 || index >= (NSInteger)self.itemViews.count) return;
-  MZClipboardCellView *view = self.itemViews[(NSUInteger)index];
+  if (index < 0 || index >= (NSInteger)self.rows.count) return;
+  MZClipboardCellView *view = [self visibleItemViewForRowIndex:index];
+  if (view == nil) return;
   MZRow *item = self.rows[(NSUInteger)index];
   [view configureWithRow:item
                 selected:(index == self.selectedRowIndex)
@@ -1776,12 +2101,11 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)scrollSelectedRowToVisible {
-  if (self.selectedRowIndex < 0 || self.selectedRowIndex >= (NSInteger)self.itemViews.count) return;
-  MZClipboardCellView *view = self.itemViews[(NSUInteger)self.selectedRowIndex];
+  if (self.selectedRowIndex < 0 || self.selectedRowIndex >= (NSInteger)self.rows.count) return;
   NSClipView *clipView = self.listScrollView.contentView;
-  if (view == nil || clipView == nil) return;
+  if (clipView == nil) return;
 
-  NSRect targetRect = view.frame;
+  NSRect targetRect = [self frameForRowAtIndex:self.selectedRowIndex];
   NSRect visibleRect = clipView.documentVisibleRect;
   if (NSContainsRect(visibleRect, targetRect) || NSIntersectsRect(visibleRect, targetRect)) {
     if (NSMinY(targetRect) >= NSMinY(visibleRect) && NSMaxY(targetRect) <= NSMaxY(visibleRect)) return;
@@ -1800,6 +2124,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   newOrigin.y = MIN(MAX(0.0, newOrigin.y), maxOffset);
   [clipView scrollToPoint:newOrigin];
   [self.listScrollView reflectScrolledClipView:clipView];
+  [self updateVisibleItemViews];
 }
 
 - (void)selectRowAtIndex:(NSInteger)index focusList:(BOOL)focusList {
@@ -1814,10 +2139,22 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   if (bounded == self.selectedRowIndex && !focusList) return;
   NSInteger previous = self.selectedRowIndex;
   self.selectedRowIndex = bounded;
-  [self updateItemViewAtIndex:previous];
-  [self updateItemViewAtIndex:bounded];
-  [self relayoutItemViews];
+  // Fast path: only the selection chrome changes, so flip layer attrs on the
+  // two affected cells. No full reconfigure, no relayout (row height is a
+  // constant; frames don't move).
+  uint64_t t0 = mach_absolute_time();
+  MZClipboardCellView *previousView = [self visibleItemViewForRowIndex:previous];
+  MZClipboardCellView *boundedView = [self visibleItemViewForRowIndex:bounded];
+  if (previousView != nil) [previousView applySelectedAppearance:NO];
+  if (boundedView != nil) [boundedView applySelectedAppearance:YES];
+  static mach_timebase_info_data_t tb = {0, 0};
+  if (tb.denom == 0) mach_timebase_info(&tb);
+  uint64_t ns = (mach_absolute_time() - t0) * tb.numer / tb.denom;
+  mz_debug_log(@"selection_repaint_ns=%llu rows=%lu", (unsigned long long)ns,
+               (unsigned long)self.itemViews.count);
   [self scrollSelectedRowToVisible];
+  boundedView = [self visibleItemViewForRowIndex:bounded];
+  if (boundedView != nil) [boundedView applySelectedAppearance:YES];
   if (focusList) [self.panel makeFirstResponder:self.listContentView];
   [self updateFilterButtons];
 }
@@ -1888,6 +2225,19 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   [self updateWindowPinButton];
 }
 
+- (void)repaintFilterChromeImmediately {
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  [self updateFilterButtons];
+  for (NSButton *button in self.filterButtons) {
+    button.needsDisplay = YES;
+    [button displayIfNeeded];
+  }
+  [self.tabsCard displayIfNeeded];
+  [self.favoritesCard displayIfNeeded];
+  [CATransaction commit];
+}
+
 - (void)updateCountLabel {
   // Pull every label fresh through mz_t so it tracks language changes as well.
   NSUInteger count = self.rows.count;
@@ -1926,9 +2276,22 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)changeFilter:(NSButton *)sender {
-  self.filterMode = (MZFilterMode)sender.tag;
+  MZFilterMode next = (MZFilterMode)sender.tag;
+  if (next == self.filterMode) return;
   int64_t selectedRowID = [self selectedItem] ? [self selectedItem].rowID : 0;
-  [self applyCurrentFilterPreservingSelection:selectedRowID];
+  self.filterMode = next;
+  self.filterChangeGeneration += 1;
+  NSUInteger generation = self.filterChangeGeneration;
+
+  // Make the tab chrome react in the same event turn. The list rebuild below
+  // can still touch hundreds of rows, but the user's click should get visual
+  // acknowledgement immediately instead of waiting behind that work.
+  [self repaintFilterChromeImmediately];
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (generation != self.filterChangeGeneration) return;
+    [self applyCurrentFilterPreservingSelection:selectedRowID];
+  });
 }
 
 - (void)selectRowForItemView:(MZClipboardCellView *)sender {
@@ -2121,6 +2484,19 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   if (hasCommand && mz_app_matches_command_key(event, 3, @"f")) {
     [self focusSearchFieldSelectingText:YES];
     return YES;
+  }
+  // ⌘A / ⌘C / ⌘X / ⌘V inside the search field: we don't ship an Edit menu,
+  // so AppKit never dispatches the standard responder-chain action. Forward
+  // them to the focused field editor manually so text selection / clipboard
+  // round-tripping works as users expect.
+  if (hasCommand && !hasOption && !hasShift) {
+    NSResponder *first = self.panel.firstResponder;
+    NSText *editor = [first isKindOfClass:[NSText class]] ? (NSText *)first : nil;
+    if (editor != nil) {
+      if (mz_app_matches_command_key(event, 0, @"a")) { [editor selectAll:nil]; return YES; }
+      if (mz_app_matches_command_key(event, 8, @"c")) { [editor copy:nil]; return YES; }
+      if (mz_app_matches_command_key(event, 7, @"x")) { [editor cut:nil]; return YES; }
+    }
   }
   if (hasCommand && mz_app_matches_command_key(event, 40, @"k")) {
     [self clearAll:nil];
