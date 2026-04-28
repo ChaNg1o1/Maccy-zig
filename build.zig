@@ -35,4 +35,20 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+
+    const coverage_test_install = b.addInstallArtifact(tests, .{
+        .dest_dir = .{ .override = .{ .custom = "coverage" } },
+        .dest_sub_path = "maccy-zig-test",
+    });
+    const coverage_test_step = b.step("coverage-test-bin", "Build the test binary used by coverage tooling");
+    coverage_test_step.dependOn(&coverage_test_install.step);
+
+    const coverage_cmd = b.addSystemCommand(&.{
+        "scripts/coverage.sh",
+        "--backend=xcode-llvm",
+        "--min-line-rate=0.90",
+    });
+    coverage_cmd.step.dependOn(&coverage_test_install.step);
+    const coverage_step = b.step("coverage-report", "Run coverage tooling for the Zig allowlist");
+    coverage_step.dependOn(&coverage_cmd.step);
 }

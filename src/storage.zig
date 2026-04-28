@@ -153,7 +153,7 @@ pub const Db = struct {
         return sqlite.sqlite3_changes(self.handle) > 0;
     }
 
-    pub fn prune(self: *Db, max_items: i64) !void {
+    pub fn prune(self: *Db, max_items: i64) !i64 {
         const stmt = try self.prepare(
             \\DELETE FROM history_items
             \\WHERE pin IS NULL AND id IN (
@@ -164,6 +164,19 @@ pub const Db = struct {
         defer _ = sqlite.sqlite3_finalize(stmt);
         _ = sqlite.sqlite3_bind_int64(stmt, 1, max_items);
         try stepDone(stmt);
+        return @intCast(sqlite.sqlite3_changes(self.handle));
+    }
+
+    /// Drop unpinned history rows whose `last_copied_at` is older than `cutoff_unix`.
+    /// Pinned items are always preserved regardless of age. Returns the number of rows deleted.
+    pub fn pruneOlderThan(self: *Db, cutoff_unix: i64) !i64 {
+        const stmt = try self.prepare(
+            "DELETE FROM history_items WHERE pin IS NULL AND last_copied_at < ?1;",
+        );
+        defer _ = sqlite.sqlite3_finalize(stmt);
+        _ = sqlite.sqlite3_bind_int64(stmt, 1, cutoff_unix);
+        try stepDone(stmt);
+        return @intCast(sqlite.sqlite3_changes(self.handle));
     }
 
     pub fn clearAll(self: *Db) !void {

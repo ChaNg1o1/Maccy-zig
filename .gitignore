@@ -1,0 +1,17 @@
+# Zig build output
+.zig-cache/
+zig-out/
+
+# Packaged app artifacts
+dist/
+
+# Local profiling / generated diagnostics
+profile/
+
+# macOS
+.DS_Store
+
+# Local research / agent scratch files
+autoresearch-state.json
+autoresearch-lessons.md
+research-results.tsv

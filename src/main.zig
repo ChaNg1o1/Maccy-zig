@@ -6,16 +6,34 @@ const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("sys/stat.h");
     @cInclude("unistd.h");
+    @cInclude("time.h");
     @cInclude("macos_app.h");
     @cInclude("macos_hotkey.h");
     @cInclude("macos_paste.h");
 });
+
+/// Unix epoch seconds (matches the value stored in `last_copied_at`).
+fn nowUnix() i64 {
+    return @intCast(c.time(null));
+}
+
+/// Monotonic timestamp in nanoseconds for benchmarking. Uses CLOCK_MONOTONIC so
+/// it isn't perturbed by clock adjustments.
+fn nowNs() i128 {
+    var ts: c.struct_timespec = undefined;
+    _ = c.clock_gettime(c.CLOCK_MONOTONIC, &ts);
+    return @as(i128, ts.tv_sec) * 1_000_000_000 + ts.tv_nsec;
+}
 
 const Config = struct {
     db_path: []const u8,
     interval_ms: u64 = 500,
     max_items: i64 = 200,
     max_blob_bytes: usize = 16 * 1024 * 1024,
+    /// 0 disables age-based pruning. Otherwise, unpinned items older than
+    /// `max_age_days` (since last_copied_at) are deleted at startup and once
+    /// per hour while the app runs. Pinned items are always preserved.
+    max_age_days: i64 = 0,
     once: bool = false,
     import_source_path: ?[]const u8 = null,
     enabled_types: []const []const u8 = &default_types,
@@ -43,7 +61,10 @@ pub fn main(init: std.process.Init) !void {
 
     var cfg = Config{ .db_path = default_db };
     if (args.len <= 1) {
-        try cmdApp(arena, cfg);
+        // GUI mode runs forever; arena would keep growing because every refresh
+        // dupes ~600 strings and the arena can't actually free them. c_allocator
+        // makes our explicit `allocator.free` calls real, so memory is bounded.
+        try cmdApp(std.heap.c_allocator, cfg);
         return;
     }
     if (std.mem.eql(u8, args[1], "help") or std.mem.eql(u8, args[1], "--help")) {
@@ -55,11 +76,12 @@ pub fn main(init: std.process.Init) !void {
     try parseOptions(args[2..], &cfg);
 
     if (std.mem.eql(u8, cmd, "app")) {
-        try cmdApp(arena, cfg);
+        try cmdApp(std.heap.c_allocator, cfg);
     } else if (std.mem.eql(u8, cmd, "import-maccy")) {
         try cmdImportMaccy(arena, cfg);
     } else if (std.mem.eql(u8, cmd, "watch")) {
-        try cmdWatch(arena, cfg);
+        // Long-running mode -- bounded heap, not the throwaway arena.
+        try cmdWatch(std.heap.c_allocator, cfg);
     } else if (std.mem.eql(u8, cmd, "once")) {
         cfg.once = true;
         try cmdWatch(arena, cfg);
@@ -91,6 +113,7 @@ fn usage() void {
         \\  --interval-ms N      Poll interval for watch (default: 500)
         \\  --max-items N        Unpinned history cap (default: 200)
         \\  --max-blob-mib N     Skip individual pasteboard blobs above N MiB (default: 16)
+        \\  --max-age-days N     Auto-delete unpinned items older than N days (default: 0 = off)
         \\  --no-images          Store text/html/rtf/file URLs only
         \\
         \\Examples:
@@ -122,6 +145,14 @@ fn parseOptions(args: []const []const u8, cfg: *Config) !void {
             if (i >= args.len) return error.MissingMaxBlob;
             const mib = try std.fmt.parseInt(usize, args[i], 10);
             cfg.max_blob_bytes = mib * 1024 * 1024;
+        } else if (std.mem.eql(u8, arg, "--max-age-days")) {
+            i += 1;
+            if (i >= args.len) return error.MissingMaxAgeDays;
+            cfg.max_age_days = try std.fmt.parseInt(i64, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--count")) {
+            i += 1;
+            if (i >= args.len) return error.MissingBenchCount;
+            g_bench_count = try std.fmt.parseInt(usize, args[i], 10);
         } else if (std.mem.eql(u8, arg, "--no-images")) {
             cfg.enabled_types = &[_][]const u8{
                 "public.file-url",
@@ -167,6 +198,17 @@ fn cmdWatch(allocator: std.mem.Allocator, cfg: Config) !void {
     var db = try Db.open(cfg.db_path);
     defer db.close();
     try db.migrate();
+    _ = try db.prune(cfg.max_items);
+    if (cfg.max_age_days > 0) {
+        const removed = try maybePruneByAge(&db, cfg.max_age_days);
+        if (removed > 0) {
+            std.debug.print(
+                "startup ttl prune removed={d} max_age_days={d}\n",
+                .{ removed, cfg.max_age_days },
+            );
+        }
+    }
+    var last_age_sweep = nowUnix();
 
     var last_change: i64 = -1;
     while (true) {
@@ -175,7 +217,17 @@ fn cmdWatch(allocator: std.mem.Allocator, cfg: Config) !void {
             .max_blob_bytes = cfg.max_blob_bytes,
         }, &last_change);
         if (result.should_prune) {
-            try db.prune(cfg.max_items);
+            _ = try db.prune(cfg.max_items);
+        }
+        if (cfg.max_age_days > 0) {
+            const now = nowUnix();
+            if (now - last_age_sweep >= AGE_PRUNE_INTERVAL_SECONDS) {
+                last_age_sweep = now;
+                _ = maybePruneByAge(&db, cfg.max_age_days) catch |err| blk: {
+                    std.debug.print("ttl prune failed: {s}\n", .{@errorName(err)});
+                    break :blk @as(i64, 0);
+                };
+            }
         }
         switch (result.disposition) {
             .inserted => std.debug.print(
@@ -265,20 +317,108 @@ fn cmdBench(allocator: std.mem.Allocator, cfg: Config) !void {
     defer db.close();
     try db.migrate();
 
+    // Phase 1: representative single-shot inserts at four payload sizes; useful for
+    // tracking per-row cost across blob size buckets.
+    const phase_start = nowNs();
     const sizes = [_]usize{ 64, 1024, 64 * 1024, 1024 * 1024 };
     for (sizes) |size| {
         const data = try allocator.alloc(u8, size);
         defer allocator.free(data);
         @memset(data, @as(u8, @intCast(size & 0xff)));
         const blob = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = data }};
+        const t0 = nowNs();
         const hash = capture_service.computeHashHex(&blob);
         var title: [256]u8 = [_]u8{0} ** 256;
         const label = try std.fmt.bufPrint(title[0..], "bench {d} bytes", .{size});
         if (label.len < title.len) title[label.len] = 0;
         _ = try db.upsertCapture(&blob, &hash, &title, "bench", .text);
+        std.debug.print(
+            "  size={d:>8} insert_us={d:>10}\n",
+            .{ size, @divTrunc(nowNs() - t0, 1000) },
+        );
     }
-    try db.prune(cfg.max_items);
-    std.debug.print("bench complete db={s}\n", .{cfg.db_path});
+    std.debug.print("phase1_total_us={d}\n", .{@divTrunc(nowNs() - phase_start, 1000)});
+
+    // Phase 2: optional bulk seed for stress testing the list/search path. Each row
+    // gets a unique title so titleFromBlobs / hash-based dedup don't collapse them.
+    if (g_bench_count > 0) {
+        std.debug.print("phase2: seeding {d} synthetic rows...\n", .{g_bench_count});
+        var seeded: usize = 0;
+        const seed_start = nowNs();
+        // Cheap pseudo-random salt mixed from the pid so repeated bench runs don't
+        // collide on identical hashes; doesn't need cryptographic quality.
+        const salt: u64 = @as(u64, @intCast(@as(c_uint, @bitCast(c.getpid())))) ^ @as(u64, @intCast(seed_start & 0xffff_ffff));
+        var i: usize = 0;
+        while (i < g_bench_count) : (i += 1) {
+            var payload: [256]u8 = undefined;
+            const text = try std.fmt.bufPrint(payload[0..], "stress-row-{x}-{d}", .{ salt ^ i, i });
+            const blob = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = text }};
+            const hash = capture_service.computeHashHex(&blob);
+            var title: [256]u8 = [_]u8{0} ** 256;
+            @memcpy(title[0..text.len], text);
+            switch (try db.upsertCapture(&blob, &hash, &title, "bench", .text)) {
+                .inserted => seeded += 1,
+                .duplicate => {},
+            }
+        }
+        const elapsed_ns = nowNs() - seed_start;
+        const ms = @divTrunc(elapsed_ns, 1_000_000);
+        const per_us: i128 = if (g_bench_count > 0) @divTrunc(elapsed_ns, 1000 * @as(i128, @intCast(g_bench_count))) else 0;
+        std.debug.print(
+            "phase2_total_ms={d} per_row_us={d} seeded={d}\n",
+            .{ ms, per_us, seeded },
+        );
+    }
+
+    // Phase 3: time the actual UI refresh query against whatever's now in the DB.
+    {
+        const refresh_start = nowNs();
+        const sql =
+            \\SELECT id, title, COALESCE(app, ''), copy_count, last_copied_at
+            \\FROM history_items
+            \\ORDER BY last_copied_at DESC, id DESC
+            \\LIMIT 200;
+        ;
+        const stmt = try db.prepare(sql);
+        defer _ = sqlite.sqlite3_finalize(stmt);
+        var rows: usize = 0;
+        while (sqlite.sqlite3_step(stmt) == sqlite.SQLITE_ROW) rows += 1;
+        std.debug.print(
+            "phase3_refresh_us={d} rows={d}\n",
+            .{ @divTrunc(nowNs() - refresh_start, 1000), rows },
+        );
+    }
+
+    // Phase 4: prune cost with whatever sits above max_items.
+    {
+        const prune_start = nowNs();
+        const removed = try db.prune(cfg.max_items);
+        std.debug.print(
+            "phase4_prune_us={d} removed={d}\n",
+            .{ @divTrunc(nowNs() - prune_start, 1000), removed },
+        );
+    }
+
+    // Phase 5: TTL prune cost if requested.
+    if (cfg.max_age_days > 0) {
+        const ttl_start = nowNs();
+        const removed = try maybePruneByAge(&db, cfg.max_age_days);
+        std.debug.print(
+            "phase5_ttl_us={d} removed={d} max_age_days={d}\n",
+            .{ @divTrunc(nowNs() - ttl_start, 1000), removed, cfg.max_age_days },
+        );
+    }
+
+    // Final row count for context.
+    var row_total: i64 = 0;
+    {
+        const stmt = try db.prepare("SELECT COUNT(*) FROM history_items;");
+        defer _ = sqlite.sqlite3_finalize(stmt);
+        if (sqlite.sqlite3_step(stmt) == sqlite.SQLITE_ROW) {
+            row_total = sqlite.sqlite3_column_int64(stmt, 0);
+        }
+    }
+    std.debug.print("bench complete db={s} total_rows={d}\n", .{ cfg.db_path, row_total });
 }
 
 test "hash changes with content" {
@@ -312,17 +452,47 @@ var g_app_query_len: usize = 0;
 var g_app_last_change: i64 = -1;
 var g_app_max_items: i64 = 200;
 var g_app_max_blob_bytes: usize = 16 * 1024 * 1024;
+var g_app_max_age_days: i64 = 0;
+var g_app_last_age_prune_unix: i64 = 0;
 var g_app_enabled_types: []const []const u8 = &default_types;
+var g_refresh_stmt: ?*sqlite.sqlite3_stmt = null;
+var g_bench_count: usize = 0;
+
+const AGE_PRUNE_INTERVAL_SECONDS: i64 = 3600; // run TTL sweep at most once per hour
+const SECONDS_PER_DAY: i64 = 86400;
+
+fn maybePruneByAge(db: *Db, max_age_days: i64) !i64 {
+    if (max_age_days <= 0) return 0;
+    const now = nowUnix();
+    const cutoff = now - max_age_days * SECONDS_PER_DAY;
+    return try db.pruneOlderThan(cutoff);
+}
 
 fn cmdApp(allocator: std.mem.Allocator, cfg: Config) !void {
     try ensureParent(cfg.db_path);
     var db = try Db.open(cfg.db_path);
     defer db.close();
     try db.migrate();
+
+    // Bring storage in line with retention policy *before* the UI loads its first
+    // snapshot, so cold-start visible rows already reflect any TTL/cap trimming.
+    _ = try db.prune(cfg.max_items);
+    if (cfg.max_age_days > 0) {
+        const removed = try maybePruneByAge(&db, cfg.max_age_days);
+        if (removed > 0) {
+            std.debug.print(
+                "startup ttl prune removed={d} max_age_days={d}\n",
+                .{ removed, cfg.max_age_days },
+            );
+        }
+    }
+    g_app_last_age_prune_unix = nowUnix();
+
     g_app_db = &db;
     g_app_allocator = allocator;
     g_app_max_items = cfg.max_items;
     g_app_max_blob_bytes = cfg.max_blob_bytes;
+    g_app_max_age_days = cfg.max_age_days;
     g_app_enabled_types = cfg.enabled_types;
 
     const callbacks = c.MZAppCallbacks{
@@ -348,11 +518,15 @@ fn appOnHotkey() callconv(.c) void {
 }
 
 fn appOnToggle() callconv(.c) void {
-    appRefreshRows() catch {};
+    appRefreshRows() catch |err| {
+        std.debug.print("appRefreshRows (toggle) failed: {s}\n", .{@errorName(err)});
+    };
 }
 
 fn appOnPoll() callconv(.c) void {
-    appPollClipboard() catch {};
+    appPollClipboard() catch |err| {
+        std.debug.print("appPollClipboard failed: {s}\n", .{@errorName(err)});
+    };
 }
 
 fn appOnSearch(query: [*c]const u8) callconv(.c) void {
@@ -361,7 +535,9 @@ fn appOnSearch(query: [*c]const u8) callconv(.c) void {
     @memset(&g_app_query, 0);
     @memcpy(g_app_query[0..n], q[0..n]);
     g_app_query_len = n;
-    appRefreshRows() catch {};
+    appRefreshRows() catch |err| {
+        std.debug.print("appRefreshRows (search) failed: {s}\n", .{@errorName(err)});
+    };
 }
 
 fn appOnSelect(id: i64, paste: c_int) callconv(.c) void {
@@ -381,10 +557,14 @@ fn appOnAction(action: c.MZAppAction, row_id: i64) callconv(.c) void {
             },
             c.MZ_APP_ACTION_CLEAR_UNPINNED => {
                 db.clearUnpinned() catch return;
+                // SQLite reuses INTEGER PRIMARY KEY values, so any cached image
+                // preview keyed on rowID could now belong to a future row.
+                c.mz_app_invalidate_preview_cache();
                 appRefreshRows() catch {};
             },
             c.MZ_APP_ACTION_CLEAR_ALL => {
                 db.clearAll() catch return;
+                c.mz_app_invalidate_preview_cache();
                 appRefreshRows() catch {};
             },
             c.MZ_APP_ACTION_QUIT => std.process.exit(0),
@@ -396,6 +576,7 @@ fn appOnAction(action: c.MZAppAction, row_id: i64) callconv(.c) void {
 fn appOnClear(all: c_int) callconv(.c) void {
     if (g_app_db) |db| {
         if (all != 0) db.clearAll() catch {} else db.clearUnpinned() catch {};
+        c.mz_app_invalidate_preview_cache();
         appRefreshRows() catch {};
     }
 }
@@ -410,8 +591,29 @@ fn appPollClipboard() !void {
         .max_blob_bytes = g_app_max_blob_bytes,
     }, &g_app_last_change);
     if (result.should_prune) {
-        try db.prune(g_app_max_items);
+        const removed = try db.prune(g_app_max_items);
+        // The capacity cull may have evicted rows whose ids are about to be
+        // reused on the next insert; drop their cached previews.
+        if (removed > 0) c.mz_app_invalidate_preview_cache();
     }
+
+    // Run TTL-based pruning at most once per AGE_PRUNE_INTERVAL_SECONDS so a long-running
+    // session eventually evicts items that crossed the age boundary while idle.
+    if (g_app_max_age_days > 0) {
+        const now = nowUnix();
+        if (now - g_app_last_age_prune_unix >= AGE_PRUNE_INTERVAL_SECONDS) {
+            g_app_last_age_prune_unix = now;
+            const removed = maybePruneByAge(db, g_app_max_age_days) catch |err| blk: {
+                std.debug.print("ttl prune failed: {s}\n", .{@errorName(err)});
+                break :blk 0;
+            };
+            if (removed > 0) {
+                c.mz_app_invalidate_preview_cache();
+                try appRefreshRows();
+            }
+        }
+    }
+
     if (result.should_refresh_rows) {
         try appRefreshRows();
     }
@@ -446,37 +648,42 @@ fn appRefreshRows() !void {
     }
 
     const query = g_app_query[0..g_app_query_len];
-    const sql =
-        \\SELECT id,
-        \\       title,
-        \\       COALESCE(app, ''),
-        \\       CASE
-        \\         WHEN content_kind=?2 THEN 'Copied as Image'
-        \\         WHEN content_kind=?3 THEN 'Copied as File'
-        \\         WHEN COALESCE(app, '') <> '' THEN app
-        \\         WHEN content_kind=?4 THEN 'Copied as Link'
-        \\         WHEN content_kind=?5 THEN 'Copied as Plain Text'
-        \\         ELSE 'Copied Data'
-        \\       END AS subtitle,
-        \\       pin IS NOT NULL AS is_pinned,
-        \\       copy_count,
-        \\       last_copied_at,
-        \\       COALESCE(pin_order, 0) AS pin_order,
-        \\       content_kind=?2 AS has_image,
-        \\       content_kind
-        \\FROM history_items
-        \\WHERE (?1 = '' OR title LIKE '%' || ?1 || '%' OR app LIKE '%' || ?1 || '%')
-        \\ORDER BY last_copied_at DESC, id DESC
-        \\LIMIT 200;
-    ;
-    const stmt = try db.prepare(sql);
-    defer _ = sqlite.sqlite3_finalize(stmt);
+    const stmt = g_refresh_stmt orelse blk: {
+        const sql =
+            \\SELECT id,
+            \\       title,
+            \\       COALESCE(app, ''),
+            \\       CASE
+            \\         WHEN content_kind=?2 THEN 'Copied as Image'
+            \\         WHEN content_kind=?3 THEN 'Copied as File'
+            \\         WHEN COALESCE(app, '') <> '' THEN app
+            \\         WHEN content_kind=?4 THEN 'Copied as Link'
+            \\         WHEN content_kind=?5 THEN 'Copied as Plain Text'
+            \\         ELSE 'Copied Data'
+            \\       END AS subtitle,
+            \\       pin IS NOT NULL AS is_pinned,
+            \\       copy_count,
+            \\       last_copied_at,
+            \\       COALESCE(pin_order, 0) AS pin_order,
+            \\       content_kind=?2 AS has_image,
+            \\       content_kind
+            \\FROM history_items
+            \\WHERE (?1 = '' OR title LIKE '%' || ?1 || '%' OR app LIKE '%' || ?1 || '%')
+            \\ORDER BY last_copied_at DESC, id DESC
+            \\LIMIT 200;
+        ;
+        const prepared = try db.prepare(sql);
+        // bind kind constants once; they never change between refreshes
+        _ = sqlite.sqlite3_bind_int(prepared, 2, c.MZ_APP_CONTENT_IMAGE);
+        _ = sqlite.sqlite3_bind_int(prepared, 3, c.MZ_APP_CONTENT_FILE);
+        _ = sqlite.sqlite3_bind_int(prepared, 4, c.MZ_APP_CONTENT_LINK);
+        _ = sqlite.sqlite3_bind_int(prepared, 5, c.MZ_APP_CONTENT_TEXT);
+        _ = sqlite.sqlite3_bind_int(prepared, 6, c.MZ_APP_CONTENT_OTHER);
+        g_refresh_stmt = prepared;
+        break :blk prepared;
+    };
+    _ = sqlite.sqlite3_reset(stmt);
     try storage.bindText(stmt, 1, query);
-    _ = sqlite.sqlite3_bind_int(stmt, 2, c.MZ_APP_CONTENT_IMAGE);
-    _ = sqlite.sqlite3_bind_int(stmt, 3, c.MZ_APP_CONTENT_FILE);
-    _ = sqlite.sqlite3_bind_int(stmt, 4, c.MZ_APP_CONTENT_LINK);
-    _ = sqlite.sqlite3_bind_int(stmt, 5, c.MZ_APP_CONTENT_TEXT);
-    _ = sqlite.sqlite3_bind_int(stmt, 6, c.MZ_APP_CONTENT_OTHER);
     while (sqlite.sqlite3_step(stmt) == sqlite.SQLITE_ROW) {
         const title_txt = sqlite.sqlite3_column_text(stmt, 1) orelse @as([*c]const u8, @ptrCast(""));
         const app_txt = sqlite.sqlite3_column_text(stmt, 2) orelse @as([*c]const u8, @ptrCast(""));
@@ -535,7 +742,7 @@ fn cmdImportMaccy(allocator: std.mem.Allocator, cfg: Config) !void {
     defer dest.close();
     try dest.migrate();
     const stats = try importMaccyDb(&source, &dest, cfg.max_blob_bytes);
-    try dest.prune(cfg.max_items);
+    _ = try dest.prune(cfg.max_items);
     std.debug.print("imported items={} contents={} skipped_items={} skipped_blobs={} source={s} dest={s}\n", .{ stats.items, stats.contents, stats.skipped_items, stats.skipped_blobs, source_path, cfg.db_path });
 }
 

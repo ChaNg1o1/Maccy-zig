@@ -1,5 +1,6 @@
 #import "macos_app.h"
 #import <AppKit/AppKit.h>
+#import <stdarg.h>
 
 typedef NS_ENUM(NSInteger, MZFilterMode) {
   MZFilterModeAll = 0,
@@ -8,6 +9,102 @@ typedef NS_ENUM(NSInteger, MZFilterMode) {
   MZFilterModeImages = 3,
   MZFilterModeFavorites = 4,
 };
+
+typedef NS_ENUM(NSInteger, MZLang) {
+  MZLangEnglish = 0,
+  MZLangChinese = 1,
+};
+
+static NSString *const kMZLangDefaultsKey = @"MZLanguage";
+static NSString *const kMZLangChangedNotification = @"MZLangChangedNotification";
+static MZLang gLang = MZLangEnglish;
+
+static MZLang mz_lang_from_string(NSString *s) {
+  if ([s isEqualToString:@"zh"] || [s isEqualToString:@"zh-Hans"] || [s isEqualToString:@"zh-CN"]) return MZLangChinese;
+  return MZLangEnglish;
+}
+
+static NSString *mz_lang_to_string(MZLang lang) {
+  return lang == MZLangChinese ? @"zh" : @"en";
+}
+
+static void mz_lang_load(void) {
+  NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+  NSString *stored = [defaults stringForKey:kMZLangDefaultsKey];
+  if (stored.length > 0) {
+    gLang = mz_lang_from_string(stored);
+    return;
+  }
+  // No stored preference — auto-detect from system locale once.
+  NSString *langCode = NSLocale.currentLocale.languageCode ?: @"en";
+  gLang = mz_lang_from_string(langCode);
+}
+
+static void mz_lang_set(MZLang lang) {
+  if (gLang == lang) return;
+  gLang = lang;
+  [NSUserDefaults.standardUserDefaults setObject:mz_lang_to_string(lang) forKey:kMZLangDefaultsKey];
+  [NSNotificationCenter.defaultCenter postNotificationName:kMZLangChangedNotification object:nil];
+}
+
+// Translate using English source as the key. Unknown keys pass through unchanged so we
+// can ship without exhaustively localizing every transient label.
+static NSString *mz_t(NSString *en) {
+  if (gLang == MZLangEnglish || en == nil) return en;
+  static NSDictionary<NSString *, NSString *> *zh = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    zh = @{
+      // Header / tooltips
+      @"Maccy": @"Maccy",
+      @"Keep window on top": @"窗口置顶",
+      // Search
+      @"Search clipboard history...": @"搜索剪贴板历史…",
+      // Tabs
+      @"All": @"全部",
+      @"Text": @"文本",
+      @"Links": @"链接",
+      @"Images": @"图片",
+      @"☆  Favorites": @"☆  收藏",
+      // Footer
+      @"Clear All": @"全部清除",
+      @"item": @"项",
+      @"items": @"项",
+      // Menus
+      @"Toggle Favorite": @"切换收藏",
+      @"Paste as Plain Text": @"粘贴为纯文本",
+      @"Reveal": @"显示位置",
+      @"Clear Unpinned": @"清空未固定",
+      @"Language": @"语言",
+      @"English": @"English",
+      @"中文": @"中文",
+      // Subtitles
+      @"Copied as Image": @"复制为图片",
+      @"Copied as File": @"复制为文件",
+      @"Copied as Link": @"复制为链接",
+      @"Copied as Plain Text": @"复制为纯文本",
+      @"Copied Data": @"已复制数据",
+    };
+  });
+  NSString *v = zh[en];
+  return v ?: en;
+}
+
+// MZRow lives further down the file; we use untyped `id` here so we don't need
+// to forward-shuffle the @interface. KVC keys match @property names.
+static NSString *mz_subtitle_for_row(id row) {
+  // Mirrors the original SQL CASE in main.zig but routes labels through mz_t()
+  // so the visible string follows the active language. Bundle ids (row.app)
+  // are intentionally not localized since they are stable identifiers.
+  NSInteger kind = [[row valueForKey:@"contentKind"] integerValue];
+  NSString *app = [row valueForKey:@"app"];
+  if (kind == MZ_APP_CONTENT_IMAGE) return mz_t(@"Copied as Image");
+  if (kind == MZ_APP_CONTENT_FILE) return mz_t(@"Copied as File");
+  if (app.length > 0) return app;
+  if (kind == MZ_APP_CONTENT_LINK) return mz_t(@"Copied as Link");
+  if (kind == MZ_APP_CONTENT_TEXT) return mz_t(@"Copied as Plain Text");
+  return mz_t(@"Copied Data");
+}
 
 static MZAppActionCallback gActionCallback = NULL;
 
@@ -55,11 +152,84 @@ static NSTextField *mz_label(NSString *text, NSFont *font, NSColor *color) {
   return label;
 }
 
+@interface MZCenteredTextFieldCell : NSTextFieldCell
+@end
+
+@implementation MZCenteredTextFieldCell
+- (NSRect)mz_centeredDrawingRectForBounds:(NSRect)rect {
+  NSRect drawingRect = [super drawingRectForBounds:rect];
+  NSSize cellSize = [self cellSizeForBounds:rect];
+  drawingRect.origin.y = rect.origin.y + floor((NSHeight(rect) - cellSize.height) * 0.5);
+  drawingRect.size.height = MIN(NSHeight(rect), cellSize.height);
+  return drawingRect;
+}
+
+- (NSRect)drawingRectForBounds:(NSRect)rect {
+  return [self mz_centeredDrawingRectForBounds:rect];
+}
+
+- (void)editWithFrame:(NSRect)rect
+               inView:(NSView *)controlView
+               editor:(NSText *)textObj
+             delegate:(id)delegate
+                event:(NSEvent *)event {
+  [super editWithFrame:[self mz_centeredDrawingRectForBounds:rect]
+                inView:controlView
+                editor:textObj
+              delegate:delegate
+                 event:event];
+}
+
+- (void)selectWithFrame:(NSRect)rect
+                 inView:(NSView *)controlView
+                 editor:(NSText *)textObj
+               delegate:(id)delegate
+                  start:(NSInteger)selStart
+                 length:(NSInteger)selLength {
+  [super selectWithFrame:[self mz_centeredDrawingRectForBounds:rect]
+                  inView:controlView
+                  editor:textObj
+                delegate:delegate
+                   start:selStart
+                  length:selLength];
+}
+@end
+
+static void mz_center_text_field_vertically(NSTextField *field) {
+  MZCenteredTextFieldCell *cell = [[MZCenteredTextFieldCell alloc] initTextCell:field.stringValue ?: @""];
+  cell.placeholderString = field.placeholderString;
+  cell.font = field.font;
+  cell.textColor = field.textColor;
+  cell.backgroundColor = field.backgroundColor;
+  cell.drawsBackground = field.drawsBackground;
+  cell.bordered = field.bordered;
+  cell.editable = field.editable;
+  cell.selectable = field.selectable;
+  cell.alignment = field.alignment;
+  cell.lineBreakMode = field.lineBreakMode;
+  cell.usesSingleLineMode = YES;
+  cell.truncatesLastVisibleLine = YES;
+  field.cell = cell;
+}
+
 static NSImage *mz_symbol_image(NSString *name, CGFloat point_size) {
   NSImage *image = [NSImage imageWithSystemSymbolName:name accessibilityDescription:nil];
   if (image == nil) return nil;
   NSImageSymbolConfiguration *config = [NSImageSymbolConfiguration configurationWithPointSize:point_size weight:NSFontWeightMedium];
   return [image imageWithSymbolConfiguration:config];
+}
+
+// Menu items render their image alongside the title at a fixed leading slot. We
+// flag the image as a template so AppKit re-tints it with the menu foreground
+// color (white in dark mode, black in light) and clamp the size so each glyph
+// occupies the same column regardless of intrinsic SF Symbol dimensions.
+static NSImage *mz_menu_symbol_image(NSString *name) {
+  NSImage *image = mz_symbol_image(name, 16.0);
+  if (image == nil) return nil;
+  image = [image copy];
+  image.template = YES;
+  image.size = NSMakeSize(18.0, 18.0);
+  return image;
 }
 
 static NSImage *mz_resource_image(NSString *name, NSString *extension) {
@@ -124,6 +294,38 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
   }
   return nil;
 }
+
+@interface MZShortcutHintView : NSView
+@property(nonatomic, copy) NSString *shortcut;
+- (instancetype)initWithShortcut:(NSString *)shortcut;
+@end
+
+@implementation MZShortcutHintView
+- (instancetype)initWithShortcut:(NSString *)shortcut {
+  if ((self = [super initWithFrame:NSZeroRect])) {
+    _shortcut = [shortcut copy];
+    self.wantsLayer = NO;
+  }
+  return self;
+}
+
+- (BOOL)isOpaque {
+  return NO;
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+  (void)dirtyRect;
+  NSString *value = self.shortcut ?: @"";
+  NSDictionary<NSAttributedStringKey, id> *attrs = @{
+    NSFontAttributeName: [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],
+    NSForegroundColorAttributeName: mz_text_secondary(),
+  };
+  NSSize size = [value sizeWithAttributes:attrs];
+  NSPoint origin = NSMakePoint(floor((NSWidth(self.bounds) - size.width) * 0.5),
+                              floor((NSHeight(self.bounds) - size.height) * 0.5));
+  [value drawAtPoint:origin withAttributes:attrs];
+}
+@end
 
 @interface MZChamferedButton : NSButton
 @property(nonatomic) BOOL active;
@@ -352,6 +554,47 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
   return NSPointInRect(point, rect);
 }
 
+static BOOL mz_view_is_descendant_of(NSView *view, NSView *ancestor) {
+  if (view == nil || ancestor == nil) return NO;
+  for (NSView *current = view; current != nil; current = current.superview) {
+    if (current == ancestor) return YES;
+  }
+  return NO;
+}
+
+static void mz_debug_log(NSString *format, ...) {
+  if (format == nil) return;
+  va_list args;
+  va_start(args, format);
+  NSString *line = [[NSString alloc] initWithFormat:format arguments:args];
+  va_end(args);
+  if (line == nil) return;
+
+  NSString *stamped = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], line];
+  NSData *data = [stamped dataUsingEncoding:NSUTF8StringEncoding];
+  if (data == nil) return;
+
+  NSString *path = @"/tmp/maccy-debug.log";
+  NSFileManager *fm = NSFileManager.defaultManager;
+  if (![fm fileExistsAtPath:path]) {
+    [data writeToFile:path atomically:YES];
+    return;
+  }
+
+  NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+  if (fh == nil) {
+    [data writeToFile:path atomically:YES];
+    return;
+  }
+  @try {
+    [fh seekToEndOfFile];
+    [fh writeData:data];
+  } @catch (__unused NSException *e) {
+  } @finally {
+    [fh closeFile];
+  }
+}
+
 - (BOOL)acceptsFirstMouse:(NSEvent *)event {
   (void)event;
   return YES;
@@ -367,19 +610,38 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
   }
 }
 
+// Decoded preview thumbnails are reusable across hovers; keep a small per-process
+// LRU keyed by row id so we don't re-read from SQLite + redecode on every mouse
+// move. NSCache auto-evicts under memory pressure, so we don't need a manual
+// invalidation hook when rows are removed from history.
+static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
+  static NSCache<NSNumber *, NSImage *> *cache = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    cache = [NSCache new];
+    cache.countLimit = 96;  // a few screens worth of hovered image rows
+  });
+  return cache;
+}
+
 - (void)showImagePreviewIfNeeded {
   if (!self.previewEnabled || self.previewPopover.shown) return;
   MZRow *row = [self.objectValue isKindOfClass:[MZRow class]] ? self.objectValue : nil;
   if (row == nil) return;
 
-  size_t len = 0;
-  const unsigned char *bytes = mz_app_copy_image_preview(row.rowID, &len);
-  if (bytes == NULL || len == 0) return;
+  NSNumber *cacheKey = @(row.rowID);
+  NSImage *image = [mz_preview_cache() objectForKey:cacheKey];
+  if (image == nil) {
+    size_t len = 0;
+    const unsigned char *bytes = mz_app_copy_image_preview(row.rowID, &len);
+    if (bytes == NULL || len == 0) return;
 
-  NSData *data = [NSData dataWithBytes:bytes length:len];
-  mz_app_free_buffer(bytes, len);
-  NSImage *image = [[NSImage alloc] initWithData:data];
-  if (image == nil) return;
+    NSData *data = [NSData dataWithBytes:bytes length:len];
+    mz_app_free_buffer(bytes, len);
+    image = [[NSImage alloc] initWithData:data];
+    if (image == nil) return;
+    [mz_preview_cache() setObject:image forKey:cacheKey cost:(NSUInteger)len];
+  }
 
   const CGFloat max_width = 360.0;
   const CGFloat max_height = 260.0;
@@ -475,7 +737,7 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
   self.objectValue = row;
   self.interactionTarget = target;
   self.titleLabel.stringValue = row.title ?: @"";
-  self.subtitleLabel.stringValue = row.subtitle ?: @"";
+  self.subtitleLabel.stringValue = mz_subtitle_for_row(row);
   self.iconView.image = icon;
   self.timeLabel.stringValue = [mz_time_formatter() stringFromDate:[NSDate dateWithTimeIntervalSince1970:row.copiedAt]];
 
@@ -503,14 +765,17 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
 }
 
 - (NSView *)hitTest:(NSPoint)point {
-  if (mz_point_hits_view(self, self.favoriteButton, point)) return self.favoriteButton;
+  if (!NSPointInRect(point, self.frame)) return nil;
+
+  NSPoint local = [self convertPoint:point fromView:self.superview];
+  if (mz_point_hits_view(self, self.favoriteButton, local)) return self.favoriteButton;
   if (self.actionBar != nil && !self.actionBar.hidden) {
-    if (mz_point_hits_view(self, self.pasteActionView.button, point)) return self.pasteActionView.button;
-    if (mz_point_hits_view(self, self.duplicateActionView.button, point)) return self.duplicateActionView.button;
-    if (mz_point_hits_view(self, self.revealActionView.button, point)) return self.revealActionView.button;
-    if (mz_point_hits_view(self, self.moreActionView.button, point)) return self.moreActionView.button;
+    if (mz_point_hits_view(self, self.pasteActionView.button, local)) return self.pasteActionView.button;
+    if (mz_point_hits_view(self, self.duplicateActionView.button, local)) return self.duplicateActionView.button;
+    if (mz_point_hits_view(self, self.revealActionView.button, local)) return self.revealActionView.button;
+    if (mz_point_hits_view(self, self.moreActionView.button, local)) return self.moreActionView.button;
   }
-  return NSPointInRect(point, self.bounds) ? self.rowButton : nil;
+  return self.rowButton;
 }
 
 - (void)updateTrackingAreas {
@@ -599,11 +864,24 @@ static BOOL mz_point_hits_view(NSView *container, NSView *target, NSPoint point)
 static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *event) {
   if (container == nil || target == nil) return NO;
   NSPoint point = [container convertPoint:event.locationInWindow fromView:nil];
+  mz_debug_log(@"activate_row container=%@ point=(%.1f,%.1f)",
+               NSStringFromClass(container.class),
+               point.x,
+               point.y);
+
   for (NSView *subview in container.subviews.reverseObjectEnumerator) {
-    if (![subview isKindOfClass:[MZClipboardCellView class]] || !NSPointInRect(point, subview.frame)) continue;
+    if (![subview isKindOfClass:[MZClipboardCellView class]]) continue;
+    if (!NSPointInRect(point, subview.frame)) continue;
 
     MZClipboardCellView *rowView = (MZClipboardCellView *)subview;
+    MZRow *row = [rowView.objectValue isKindOfClass:[MZRow class]] ? rowView.objectValue : nil;
     NSPoint rowPoint = [rowView convertPoint:event.locationInWindow fromView:nil];
+    mz_debug_log(@"activate_row matched rowID=%lld title=%@ rowPoint=(%.1f,%.1f)",
+                 row ? row.rowID : 0,
+                 row ? row.title : @"<nil>",
+                 rowPoint.x,
+                 rowPoint.y);
+
     if (mz_point_hits_view(rowView, rowView.favoriteButton, rowPoint)) {
       [rowView.favoriteButton performClick:nil];
       return YES;
@@ -640,8 +918,9 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
       [target performSelector:@selector(activateSelection:) withObject:rowView];
 #pragma clang diagnostic pop
+      return YES;
     }
-    return YES;
+    return NO;
   }
   return NO;
 }
@@ -704,7 +983,17 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 }
 @end
 
-@interface MZAppController : NSObject <NSApplicationDelegate, NSTextFieldDelegate>
+// Persisted window size keys. We only remember size — position keeps the
+// "drop-from-menubar / centered" behavior so the user always finds the panel in
+// the same spot on the screen.
+static NSString *const kMZWindowWidthKey = @"MZWindowWidth";
+static NSString *const kMZWindowHeightKey = @"MZWindowHeight";
+static const CGFloat kMZPanelDefaultWidth = 561.0;
+static const CGFloat kMZPanelDefaultHeight = 701.0;
+static const CGFloat kMZPanelMinWidth = 561.0;
+static const CGFloat kMZPanelMinHeight = 460.0;
+
+@interface MZAppController : NSObject <NSApplicationDelegate, NSTextFieldDelegate, NSWindowDelegate>
 @property(nonatomic) MZAppCallbacks callbacks;
 @property(nonatomic) MZAppActionCallback actionCallback;
 @property(nonatomic, strong) NSStatusItem *statusItem;
@@ -724,12 +1013,27 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 @property(nonatomic, strong) NSButton *pinButton;
 @property(nonatomic, strong) NSButton *settingsButton;
 @property(nonatomic, strong) id keyEventMonitor;
+@property(nonatomic, strong) NSRunningApplication *previousFrontmostApp;
+@property(nonatomic, strong) NSMenuItem *languageMenuItem;
+// Chrome views referenced from -relayoutPanelChrome so the layout stays
+// pixel-correct after the user resizes the window.
+@property(nonatomic, strong) NSImageView *titleMark;
+@property(nonatomic, strong) NSTextField *appTitleLabel;
+@property(nonatomic, strong) NSView *searchBox;
+@property(nonatomic, strong) NSView *searchHint;
+@property(nonatomic, strong) NSView *tabsCard;
+@property(nonatomic, strong) NSMutableArray<NSView *> *tabDividers;
+@property(nonatomic, strong) NSView *favoritesCard;
+@property(nonatomic, strong) NSView *listCard;
+@property(nonatomic, strong) NSView *clearHint;
 @property(nonatomic) MZFilterMode filterMode;
 @property(nonatomic) NSInteger selectedRowIndex;
 @property(nonatomic) BOOL windowPinned;
 @end
 
 static MZAppController *gController = nil;
+static const CGFloat kMZListTopPadding = 8.0;
+static const CGFloat kMZListBottomPadding = 8.0;
 
 static void mz_app_dispatch_action(MZAppController *controller, MZAppAction action, int64_t rowID) {
   if (controller.actionCallback != NULL) {
@@ -769,6 +1073,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     _itemViews = [NSMutableArray array];
     _iconCache = [NSMutableDictionary dictionary];
     _filterButtons = [NSMutableArray array];
+    _tabDividers = [NSMutableArray array];
     _filterMode = MZFilterModeAll;
     _selectedRowIndex = -1;
     _windowPinned = NO;
@@ -819,8 +1124,6 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)buildPanel {
-  const CGFloat panelWidth = 561.0;
-  const CGFloat panelHeight = 701.0;
   const CGFloat outerMargin = 25.0;
   const CGFloat contentInset = 16.0;
   const CGFloat contentTextX = 84.0;
@@ -829,7 +1132,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   const CGFloat tabsHeight = 42.0;
   const CGFloat sectionGap = 16.0;
   const CGFloat listBottom = 60.0;
-  NSRect frame = NSMakeRect(0, 0, panelWidth, panelHeight);
+  NSRect frame = NSMakeRect(0, 0, kMZPanelDefaultWidth, kMZPanelDefaultHeight);
   self.panel = [[NSPanel alloc] initWithContentRect:frame
                                           styleMask:(NSWindowStyleMaskTitled |
                                                      NSWindowStyleMaskClosable |
@@ -848,8 +1151,10 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   self.panel.backgroundColor = NSColor.clearColor;
   self.panel.opaque = NO;
   self.panel.hasShadow = YES;
-  self.panel.minSize = frame.size;
-  self.panel.maxSize = frame.size;
+  // Allow full two-axis resizing while preserving the original 561px layout as
+  // the minimum width. Wider windows reflow the search field, tabs, rows, and
+  // footer; narrower windows are blocked to avoid clipped chrome.
+  self.panel.minSize = NSMakeSize(kMZPanelMinWidth, kMZPanelMinHeight);
 
   self.rootView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, frame.size.width, frame.size.height)];
   self.rootView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -868,42 +1173,43 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   mini.hidden = YES;
   zoom.hidden = YES;
 
-  NSImageView *titleMark = [[NSImageView alloc] initWithFrame:NSMakeRect((frame.size.width - 154.0) * 0.5, frame.size.height - 60.0, 26.0, 48.0)];
-  titleMark.image = mz_resource_image(@"logo-mark", @"png");
-  titleMark.imageScaling = NSImageScaleProportionallyUpOrDown;
-  [self.rootView addSubview:titleMark];
+  self.titleMark = [[NSImageView alloc] initWithFrame:NSZeroRect];
+  self.titleMark.image = mz_resource_image(@"logo-mark", @"png");
+  self.titleMark.imageScaling = NSImageScaleProportionallyUpOrDown;
+  self.titleMark.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin | NSViewMinYMargin;
+  [self.rootView addSubview:self.titleMark];
 
-  NSTextField *title = mz_label(@"Maccy", [NSFont systemFontOfSize:25 weight:NSFontWeightBold], mz_text_primary());
-  title.frame = NSMakeRect(NSMaxX(titleMark.frame) + 12.0, frame.size.height - 50.0, 116.0, 32.0);
-  title.alignment = NSTextAlignmentCenter;
-  [self.rootView addSubview:title];
+  self.appTitleLabel = mz_label(@"Maccy", [NSFont systemFontOfSize:25 weight:NSFontWeightBold], mz_text_primary());
+  self.appTitleLabel.alignment = NSTextAlignmentCenter;
+  self.appTitleLabel.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin | NSViewMinYMargin;
+  [self.rootView addSubview:self.appTitleLabel];
 
   self.pinButton = [self chromeButtonWithSymbol:@"pin" action:@selector(toggleWindowPin:)];
-  self.pinButton.frame = NSMakeRect(frame.size.width - 98, frame.size.height - chromeTop, 28, 28);
-  self.pinButton.toolTip = @"Keep window on top";
+  self.pinButton.toolTip = mz_t(@"Keep window on top");
+  self.pinButton.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
   [self.rootView addSubview:self.pinButton];
 
   self.settingsButton = [self chromeButtonWithSymbol:@"gearshape" action:@selector(showHeaderMenu:)];
-  self.settingsButton.frame = NSMakeRect(frame.size.width - 54, frame.size.height - chromeTop, 30, 30);
+  self.settingsButton.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
   [self.rootView addSubview:self.settingsButton];
 
-  CGFloat searchY = frame.size.height - 123.0;
-  NSView *searchBox = [[NSView alloc] initWithFrame:NSMakeRect(outerMargin, searchY, frame.size.width - outerMargin * 2.0, searchHeight)];
-  searchBox.wantsLayer = YES;
-  searchBox.layer.cornerRadius = 8.0;
-  searchBox.layer.backgroundColor = mz_card_fill().CGColor;
-  searchBox.layer.borderWidth = 1.0;
-  searchBox.layer.borderColor = mz_card_border().CGColor;
-  [self.rootView addSubview:searchBox];
+  self.searchBox = [[NSView alloc] initWithFrame:NSZeroRect];
+  self.searchBox.wantsLayer = YES;
+  self.searchBox.layer.cornerRadius = 8.0;
+  self.searchBox.layer.backgroundColor = mz_card_fill().CGColor;
+  self.searchBox.layer.borderWidth = 1.0;
+  self.searchBox.layer.borderColor = mz_card_border().CGColor;
+  self.searchBox.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+  [self.rootView addSubview:self.searchBox];
 
   NSImageView *searchIcon = [[NSImageView alloc] initWithFrame:NSMakeRect(17, 12, 23, 23)];
   searchIcon.image = mz_symbol_image(@"magnifyingglass", 20.0);
   searchIcon.contentTintColor = mz_text_primary();
-  [searchBox addSubview:searchIcon];
+  [self.searchBox addSubview:searchIcon];
 
-  self.searchField = [[NSTextField alloc] initWithFrame:NSMakeRect(contentTextX, 8, searchBox.bounds.size.width - contentTextX - 87, 32)];
+  self.searchField = [[NSTextField alloc] initWithFrame:NSZeroRect];
   self.searchField.delegate = self;
-  self.searchField.placeholderString = @"Search clipboard history...";
+  self.searchField.placeholderString = mz_t(@"Search clipboard history...");
   self.searchField.font = [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold];
   self.searchField.textColor = mz_text_primary();
   self.searchField.drawsBackground = NO;
@@ -911,76 +1217,71 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   self.searchField.bordered = NO;
   self.searchField.focusRingType = NSFocusRingTypeNone;
   self.searchField.autoresizingMask = NSViewWidthSizable;
-  [searchBox addSubview:self.searchField];
+  mz_center_text_field_vertically(self.searchField);
+  [self.searchBox addSubview:self.searchField];
 
-  NSView *searchHint = [[NSView alloc] initWithFrame:NSMakeRect(searchBox.bounds.size.width - 58, 9, 43, 29)];
-  searchHint.wantsLayer = YES;
-  searchHint.layer.cornerRadius = 5.0;
-  searchHint.layer.borderWidth = 1.0;
-  searchHint.layer.borderColor = mz_card_border().CGColor;
-  searchHint.layer.backgroundColor = mz_color(28, 31, 35, 1.0).CGColor;
-  searchHint.autoresizingMask = NSViewMinXMargin;
-  [searchBox addSubview:searchHint];
+  self.searchHint = [[NSView alloc] initWithFrame:NSZeroRect];
+  self.searchHint.wantsLayer = YES;
+  self.searchHint.layer.cornerRadius = 5.0;
+  self.searchHint.layer.borderWidth = 1.0;
+  self.searchHint.layer.borderColor = mz_card_border().CGColor;
+  self.searchHint.layer.backgroundColor = mz_color(28, 31, 35, 1.0).CGColor;
+  self.searchHint.autoresizingMask = NSViewMinXMargin;
+  [self.searchBox addSubview:self.searchHint];
 
-  NSTextField *searchHintLabel = mz_label(@"⌘F", [NSFont monospacedSystemFontOfSize:13 weight:NSFontWeightSemibold], mz_text_secondary());
-  searchHintLabel.frame = NSMakeRect(0, 5, 43, 19);
-  searchHintLabel.alignment = NSTextAlignmentCenter;
-  [searchHint addSubview:searchHintLabel];
+  MZShortcutHintView *searchHintLabel = [[MZShortcutHintView alloc] initWithShortcut:@"⌘F"];
+  searchHintLabel.frame = self.searchHint.bounds;
+  searchHintLabel.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  [self.searchHint addSubview:searchHintLabel];
 
-  CGFloat filtersY = searchY - sectionGap - tabsHeight;
-  CGFloat filtersWidth = frame.size.width - outerMargin * 2.0;
-  CGFloat favoritesWidth = 129.0;
-  CGFloat tabsGap = 15.0;
-  CGFloat tabsWidth = filtersWidth - favoritesWidth - tabsGap;
-  NSView *tabsCard = [[NSView alloc] initWithFrame:NSMakeRect(outerMargin, filtersY, tabsWidth, tabsHeight)];
-  tabsCard.wantsLayer = YES;
-  tabsCard.layer.cornerRadius = 6.0;
-  tabsCard.layer.backgroundColor = mz_card_fill().CGColor;
-  tabsCard.layer.borderWidth = 1.0;
-  tabsCard.layer.borderColor = mz_card_border().CGColor;
-  [self.rootView addSubview:tabsCard];
+  self.tabsCard = [[NSView alloc] initWithFrame:NSZeroRect];
+  self.tabsCard.wantsLayer = YES;
+  self.tabsCard.layer.cornerRadius = 6.0;
+  self.tabsCard.layer.backgroundColor = mz_card_fill().CGColor;
+  self.tabsCard.layer.borderWidth = 1.0;
+  self.tabsCard.layer.borderColor = mz_card_border().CGColor;
+  self.tabsCard.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+  [self.rootView addSubview:self.tabsCard];
 
-  NSArray<NSString *> *titles = @[ @"All", @"Text", @"Links", @"Images" ];
-  CGFloat slot_width = tabsCard.bounds.size.width / titles.count;
+  NSArray<NSString *> *titles = @[ mz_t(@"All"), mz_t(@"Text"), mz_t(@"Links"), mz_t(@"Images") ];
   for (NSInteger i = 0; i < (NSInteger)titles.count; i++) {
     NSButton *button = [self filterButtonWithTitle:titles[(NSUInteger)i] tag:i];
-    button.frame = NSMakeRect(slot_width * i, 0, i == (NSInteger)titles.count - 1 ? tabsCard.bounds.size.width - slot_width * i : slot_width, tabsCard.bounds.size.height);
-    [tabsCard addSubview:button];
+    [self.tabsCard addSubview:button];
     [self.filterButtons addObject:button];
-
     if (i > 0) {
-      NSView *divider = [[NSView alloc] initWithFrame:NSMakeRect(slot_width * i, 8, 1, 26)];
+      NSView *divider = [[NSView alloc] initWithFrame:NSZeroRect];
       divider.wantsLayer = YES;
       divider.layer.backgroundColor = mz_color(65, 69, 76, 0.78).CGColor;
-      [tabsCard addSubview:divider];
+      [self.tabsCard addSubview:divider];
+      [self.tabDividers addObject:divider];
     }
   }
 
-  NSView *favoritesCard = [[NSView alloc] initWithFrame:NSMakeRect(CGRectGetMaxX(tabsCard.frame) + tabsGap, filtersY, favoritesWidth, tabsHeight)];
-  favoritesCard.wantsLayer = YES;
-  favoritesCard.layer.cornerRadius = 6.0;
-  favoritesCard.layer.backgroundColor = mz_card_fill().CGColor;
-  favoritesCard.layer.borderWidth = 1.0;
-  favoritesCard.layer.borderColor = mz_card_border().CGColor;
-  [self.rootView addSubview:favoritesCard];
+  self.favoritesCard = [[NSView alloc] initWithFrame:NSZeroRect];
+  self.favoritesCard.wantsLayer = YES;
+  self.favoritesCard.layer.cornerRadius = 6.0;
+  self.favoritesCard.layer.backgroundColor = mz_card_fill().CGColor;
+  self.favoritesCard.layer.borderWidth = 1.0;
+  self.favoritesCard.layer.borderColor = mz_card_border().CGColor;
+  self.favoritesCard.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
+  [self.rootView addSubview:self.favoritesCard];
 
-  NSButton *favoritesButton = [self filterButtonWithTitle:@"☆  Favorites" tag:MZFilterModeFavorites];
-  favoritesButton.frame = favoritesCard.bounds;
-  [favoritesCard addSubview:favoritesButton];
+  NSButton *favoritesButton = [self filterButtonWithTitle:mz_t(@"☆  Favorites") tag:MZFilterModeFavorites];
+  favoritesButton.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  [self.favoritesCard addSubview:favoritesButton];
   [self.filterButtons addObject:favoritesButton];
   [self updateFilterButtons];
 
-  CGFloat listTop = filtersY - sectionGap;
-  CGFloat listHeight = listTop - listBottom;
-  NSView *listCard = [[NSView alloc] initWithFrame:NSMakeRect(outerMargin, listBottom, frame.size.width - outerMargin * 2.0, listHeight)];
-  listCard.wantsLayer = YES;
-  listCard.layer.cornerRadius = 8.0;
-  listCard.layer.borderWidth = 1.0;
-  listCard.layer.borderColor = mz_card_border().CGColor;
-  listCard.layer.backgroundColor = mz_color(21, 24, 27, 1.0).CGColor;
-  [self.rootView addSubview:listCard];
+  self.listCard = [[NSView alloc] initWithFrame:NSZeroRect];
+  self.listCard.wantsLayer = YES;
+  self.listCard.layer.cornerRadius = 8.0;
+  self.listCard.layer.borderWidth = 1.0;
+  self.listCard.layer.borderColor = mz_card_border().CGColor;
+  self.listCard.layer.backgroundColor = mz_color(21, 24, 27, 1.0).CGColor;
+  self.listCard.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  [self.rootView addSubview:self.listCard];
 
-  self.listScrollView = [[MZListScrollView alloc] initWithFrame:listCard.bounds];
+  self.listScrollView = [[MZListScrollView alloc] initWithFrame:NSZeroRect];
   self.listScrollView.drawsBackground = NO;
   self.listScrollView.borderType = NSNoBorder;
   self.listScrollView.hasVerticalScroller = YES;
@@ -988,67 +1289,233 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   self.listScrollView.automaticallyAdjustsContentInsets = NO;
   self.listScrollView.scrollerInsets = NSEdgeInsetsMake(4, 0, 4, 4);
   self.listScrollView.interactionTarget = self;
-  [listCard addSubview:self.listScrollView];
+  self.listScrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  [self.listCard addSubview:self.listScrollView];
 
-  self.listContentView = [[MZFlippedView alloc] initWithFrame:self.listScrollView.bounds];
+  self.listContentView = [[MZFlippedView alloc] initWithFrame:NSZeroRect];
   self.listContentView.interactionTarget = self;
   self.listContentView.autoresizingMask = NSViewWidthSizable;
   self.listScrollView.documentView = self.listContentView;
 
-  NSImageView *countIcon = [[NSImageView alloc] initWithFrame:NSMakeRect(outerMargin + contentInset, 27, 18, 18)];
+  NSImageView *countIcon = [[NSImageView alloc] initWithFrame:NSMakeRect(outerMargin + contentInset, 25.5, 18, 18)];
   countIcon.image = mz_symbol_image(@"checkmark.circle", 16.0);
   countIcon.contentTintColor = mz_primary_orange_shadow();
   [self.rootView addSubview:countIcon];
 
   self.countLabel = mz_label(@"0 items", [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold], mz_text_secondary());
-  self.countLabel.frame = NSMakeRect(outerMargin + contentInset + 28, 22, 120, 28);
+  self.countLabel.frame = NSMakeRect(outerMargin + contentInset + 28, 20.0, 120, 29.0);
+  mz_center_text_field_vertically(self.countLabel);
   [self.rootView addSubview:self.countLabel];
 
-  const CGFloat clearGroupWidth = 108.0 + 15.0 + 48.0;
-  const CGFloat clearGroupX = floor((frame.size.width - clearGroupWidth) * 0.5);
-  self.clearButton = [self footerTextButtonWithTitle:@"Clear All" action:@selector(clearAll:)];
-  self.clearButton.frame = NSMakeRect(clearGroupX, 19, 108, 32);
+  self.clearButton = [self footerTextButtonWithTitle:mz_t(@"Clear All") action:@selector(clearAll:)];
+  self.clearButton.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
   [self.rootView addSubview:self.clearButton];
 
-  NSView *clearHint = [[NSView alloc] initWithFrame:NSMakeRect(clearGroupX + 123.0, 20, 48, 29)];
-  clearHint.wantsLayer = YES;
-  clearHint.layer.cornerRadius = 5.0;
-  clearHint.layer.borderWidth = 1.0;
-  clearHint.layer.borderColor = mz_card_border().CGColor;
-  clearHint.layer.backgroundColor = mz_color(28, 31, 35, 1.0).CGColor;
-  [self.rootView addSubview:clearHint];
+  self.clearHint = [[NSView alloc] initWithFrame:NSZeroRect];
+  self.clearHint.wantsLayer = YES;
+  self.clearHint.layer.cornerRadius = 5.0;
+  self.clearHint.layer.borderWidth = 1.0;
+  self.clearHint.layer.borderColor = mz_card_border().CGColor;
+  self.clearHint.layer.backgroundColor = mz_color(28, 31, 35, 1.0).CGColor;
+  self.clearHint.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
+  [self.rootView addSubview:self.clearHint];
 
-  NSTextField *clearHintLabel = mz_label(@"⌘K", [NSFont monospacedSystemFontOfSize:13 weight:NSFontWeightSemibold], mz_text_secondary());
-  clearHintLabel.frame = NSMakeRect(0, 5, 48, 18);
-  clearHintLabel.alignment = NSTextAlignmentCenter;
-  [clearHint addSubview:clearHintLabel];
+  MZShortcutHintView *clearHintLabel = [[MZShortcutHintView alloc] initWithShortcut:@"⌘K"];
+  clearHintLabel.frame = self.clearHint.bounds;
+  clearHintLabel.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  [self.clearHint addSubview:clearHintLabel];
+
+  // Suppress unused-variable warnings for layout constants only consumed by
+  // -relayoutPanelChrome below — keeping them named here documents intent.
+  (void)contentInset;
+  (void)contentTextX;
+  (void)chromeTop;
+  (void)searchHeight;
+  (void)tabsHeight;
+  (void)sectionGap;
+  (void)listBottom;
+  (void)outerMargin;
 
   self.actionsMenu = [[NSMenu alloc] initWithTitle:@"Actions"];
+  // Icons mirror the reference design: outlined SF Symbols rendered as templates so
+  // they pick up the menu's foreground color and stay aligned with the title text.
   NSArray<NSDictionary *> *menu_specs = @[
-    @{@"title": @"Toggle Favorite", @"selector": NSStringFromSelector(@selector(toggleSelectedFavorite:))},
-    @{@"title": @"Paste as Plain Text", @"selector": NSStringFromSelector(@selector(pasteSelectedAsPlainText:))},
-    @{@"title": @"Reveal", @"selector": NSStringFromSelector(@selector(revealSelected:))},
+    @{@"title": mz_t(@"Toggle Favorite"), @"selector": NSStringFromSelector(@selector(toggleSelectedFavorite:)), @"symbol": @"star"},
+    @{@"title": mz_t(@"Paste as Plain Text"), @"selector": NSStringFromSelector(@selector(pasteSelectedAsPlainText:)), @"symbol": @"doc.on.doc"},
+    @{@"title": mz_t(@"Reveal"), @"selector": NSStringFromSelector(@selector(revealSelected:)), @"symbol": @"magnifyingglass"},
   ];
   for (NSDictionary *spec in menu_specs) {
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:spec[@"title"] action:NSSelectorFromString(spec[@"selector"]) keyEquivalent:@""];
     item.target = self;
+    item.image = mz_menu_symbol_image(spec[@"symbol"]);
     [self.actionsMenu addItem:item];
   }
   [self.actionsMenu addItem:[NSMenuItem separatorItem]];
   for (NSDictionary *spec in @[
-         @{@"title": @"Clear Unpinned", @"selector": NSStringFromSelector(@selector(clearUnpinned:))},
-         @{@"title": @"Clear All", @"selector": NSStringFromSelector(@selector(clearAll:))},
+         @{@"title": mz_t(@"Clear Unpinned"), @"selector": NSStringFromSelector(@selector(clearUnpinned:)), @"symbol": @"trash"},
+         @{@"title": mz_t(@"Clear All"), @"selector": NSStringFromSelector(@selector(clearAll:)), @"symbol": @"trash"},
        ]) {
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:spec[@"title"] action:NSSelectorFromString(spec[@"selector"]) keyEquivalent:@""];
     item.target = self;
+    item.image = mz_menu_symbol_image(spec[@"symbol"]);
     [self.actionsMenu addItem:item];
   }
+  // Language submenu — toggles between English and 中文 in-place.
+  [self.actionsMenu addItem:[NSMenuItem separatorItem]];
+  NSMenuItem *langRoot = [[NSMenuItem alloc] initWithTitle:mz_t(@"Language") action:NULL keyEquivalent:@""];
+  langRoot.image = mz_menu_symbol_image(@"command");
+  NSMenu *langMenu = [[NSMenu alloc] initWithTitle:@"Language"];
+  NSMenuItem *enItem = [[NSMenuItem alloc] initWithTitle:@"English" action:@selector(switchLanguageToEnglish:) keyEquivalent:@""];
+  enItem.target = self;
+  enItem.state = (gLang == MZLangEnglish) ? NSControlStateValueOn : NSControlStateValueOff;
+  [langMenu addItem:enItem];
+  NSMenuItem *zhItem = [[NSMenuItem alloc] initWithTitle:@"中文" action:@selector(switchLanguageToChinese:) keyEquivalent:@""];
+  zhItem.target = self;
+  zhItem.state = (gLang == MZLangChinese) ? NSControlStateValueOn : NSControlStateValueOff;
+  [langMenu addItem:zhItem];
+  langRoot.submenu = langMenu;
+  [self.actionsMenu addItem:langRoot];
+  self.languageMenuItem = langRoot;
+
   [self.actionsMenu addItem:[NSMenuItem separatorItem]];
   NSMenuItem *quit_item = [[NSMenuItem alloc] initWithTitle:@"Quit" action:@selector(quitApplication:) keyEquivalent:@""];
   quit_item.target = self;
+  quit_item.image = mz_menu_symbol_image(@"xmark");
   [self.actionsMenu addItem:quit_item];
 
   [self updateWindowPinButton];
+
+  [NSNotificationCenter.defaultCenter addObserver:self
+                                         selector:@selector(handleLanguageChange:)
+                                             name:kMZLangChangedNotification
+                                           object:nil];
+
+  [self restoreSavedPanelSize];
+  [self relayoutPanelChrome];
+  // Install the window delegate AFTER initial layout so we don't bounce
+  // through -windowDidResize: while we're still constructing subviews.
+  self.panel.delegate = self;
+}
+
+- (void)restoreSavedPanelSize {
+  NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+  if ([defaults objectForKey:kMZWindowWidthKey] == nil ||
+      [defaults objectForKey:kMZWindowHeightKey] == nil) {
+    return;
+  }
+  CGFloat width = [defaults doubleForKey:kMZWindowWidthKey];
+  CGFloat height = [defaults doubleForKey:kMZWindowHeightKey];
+  if (width < kMZPanelMinWidth) width = kMZPanelMinWidth;
+  if (height < kMZPanelMinHeight) height = kMZPanelMinHeight;
+
+  // Don't allow restoring a size larger than the current screen — users may
+  // have moved between displays since the last save.
+  NSScreen *screen = NSScreen.mainScreen;
+  if (screen != nil) {
+    NSSize visible = screen.visibleFrame.size;
+    if (width > visible.width) width = visible.width;
+    if (height > visible.height) height = visible.height;
+  }
+
+  NSRect frame = self.panel.frame;
+  frame.size = NSMakeSize(width, height);
+  [self.panel setFrame:frame display:NO];
+}
+
+- (void)persistPanelSize {
+  if (self.panel == nil) return;
+  NSSize size = self.panel.frame.size;
+  NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+  [defaults setDouble:size.width forKey:kMZWindowWidthKey];
+  [defaults setDouble:size.height forKey:kMZWindowHeightKey];
+}
+
+// Recompute every chrome subview's frame from the current rootView size. Called
+// on first layout, every -windowDidResize: tick, and after the saved size is
+// restored on launch. Children inside resizable parents (search field inside
+// searchBox, tab buttons inside tabsCard) are positioned here too so the layout
+// stays consistent regardless of intermediate autoresizing behavior.
+- (void)relayoutPanelChrome {
+  if (self.rootView == nil) return;
+  CGFloat W = self.rootView.bounds.size.width;
+  CGFloat H = self.rootView.bounds.size.height;
+  const CGFloat outerMargin = 25.0;
+  const CGFloat contentInset = 16.0;
+  const CGFloat contentTextX = 84.0;
+  const CGFloat chromeTop = 42.0;
+  const CGFloat searchHeight = 47.0;
+  const CGFloat tabsHeight = 42.0;
+  const CGFloat sectionGap = 16.0;
+  const CGFloat listBottom = 60.0;
+
+  // Header — logo + wordmark stay center-anchored, window-pin/settings buttons
+  // hug the top-right corner.
+  self.titleMark.frame = NSMakeRect(floor((W - 154.0) * 0.5), H - 60.0, 26.0, 48.0);
+  self.appTitleLabel.frame = NSMakeRect(NSMaxX(self.titleMark.frame) + 12.0, H - 50.0, 116.0, 32.0);
+  self.pinButton.frame = NSMakeRect(W - 98.0, H - chromeTop, 28.0, 28.0);
+  self.settingsButton.frame = NSMakeRect(W - 54.0, H - chromeTop, 30.0, 30.0);
+
+  // Search row — full width minus side margins.
+  CGFloat searchY = H - 123.0;
+  self.searchBox.frame = NSMakeRect(outerMargin, searchY, W - outerMargin * 2.0, searchHeight);
+  CGFloat searchInner = self.searchBox.bounds.size.width;
+  self.searchField.frame = NSMakeRect(contentTextX, 7.5, MAX(0.0, searchInner - contentTextX - 87.0), 32.0);
+  self.searchHint.frame = NSMakeRect(searchInner - 58.0, 9.0, 43.0, 29.0);
+  for (NSView *subview in self.searchHint.subviews) subview.frame = self.searchHint.bounds;
+
+  // Filter row — tabsCard takes the leading area, favorites card hugs the
+  // trailing edge with a fixed gap so its width never changes.
+  CGFloat filtersY = searchY - sectionGap - tabsHeight;
+  CGFloat filtersWidth = W - outerMargin * 2.0;
+  CGFloat favoritesWidth = 129.0;
+  CGFloat tabsGap = 15.0;
+  CGFloat tabsWidth = MAX(0.0, filtersWidth - favoritesWidth - tabsGap);
+  self.tabsCard.frame = NSMakeRect(outerMargin, filtersY, tabsWidth, tabsHeight);
+  self.favoritesCard.frame = NSMakeRect(NSMaxX(self.tabsCard.frame) + tabsGap, filtersY, favoritesWidth, tabsHeight);
+
+  CGFloat tabsCardWidth = self.tabsCard.bounds.size.width;
+  CGFloat tabsCardHeight = self.tabsCard.bounds.size.height;
+  CGFloat slot_width = tabsCardWidth / 4.0;
+  for (NSInteger i = 0; i < 4 && i < (NSInteger)self.filterButtons.count; i++) {
+    NSButton *button = self.filterButtons[(NSUInteger)i];
+    CGFloat width = (i == 3) ? (tabsCardWidth - slot_width * 3.0) : slot_width;
+    button.frame = NSMakeRect(slot_width * (CGFloat)i, 0.0, width, tabsCardHeight);
+  }
+  for (NSInteger i = 0; i < (NSInteger)self.tabDividers.count; i++) {
+    NSView *divider = self.tabDividers[(NSUInteger)i];
+    divider.frame = NSMakeRect(slot_width * (CGFloat)(i + 1), 8.0, 1.0, 26.0);
+  }
+  if (self.filterButtons.count >= 5) {
+    self.filterButtons[4].frame = self.favoritesCard.bounds;
+  }
+
+  // History list grows with the window.
+  CGFloat listTop = filtersY - sectionGap;
+  CGFloat listHeight = MAX(0.0, listTop - listBottom);
+  self.listCard.frame = NSMakeRect(outerMargin, listBottom, W - outerMargin * 2.0, listHeight);
+  self.listScrollView.frame = self.listCard.bounds;
+
+  // Footer count anchors bottom-left; the "Clear All" + ⌘K group stays centered.
+  // (countIcon/countLabel use fixed bottom-left coordinates that don't depend on W.)
+  const CGFloat clearGroupWidth = 108.0 + 15.0 + 48.0;
+  CGFloat clearGroupX = floor((W - clearGroupWidth) * 0.5);
+  self.clearButton.frame = NSMakeRect(clearGroupX, 20.0, 108.0, 29.0);
+  self.clearHint.frame = NSMakeRect(clearGroupX + 123.0, 20.0, 48.0, 29.0);
+  for (NSView *subview in self.clearHint.subviews) subview.frame = self.clearHint.bounds;
+
+  // Reflow visible rows to the list's new width.
+  [self relayoutItemViews];
+}
+
+- (void)windowDidResize:(NSNotification *)notification {
+  if (notification.object != self.panel) return;
+  [self relayoutPanelChrome];
+  [self persistPanelSize];
+}
+
+- (void)windowDidMove:(NSNotification *)notification {
+  // Position is intentionally not persisted — see kMZWindowWidthKey docs above.
+  (void)notification;
 }
 
 - (NSButton *)chromeButtonWithSymbol:(NSString *)symbol action:(SEL)action {
@@ -1113,6 +1580,13 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   pf.origin.x = NSMidX(sf) - pf.size.width * 0.5;
   pf.origin.y = NSMaxY(sf) - pf.size.height - 34;
   [self.panel setFrame:pf display:NO];
+
+  NSRunningApplication *current = NSRunningApplication.currentApplication;
+  NSRunningApplication *frontmost = NSWorkspace.sharedWorkspace.frontmostApplication;
+  if (frontmost != nil && frontmost.processIdentifier != current.processIdentifier) {
+    self.previousFrontmostApp = frontmost;
+  }
+
   [NSApp activateIgnoringOtherApps:YES];
   [self.panel orderFrontRegardless];
   [self.panel makeKeyAndOrderFront:nil];
@@ -1129,6 +1603,17 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 
 - (void)hide {
   [self.panel orderOut:nil];
+  [self restorePreviousFrontmostApp];
+}
+
+- (void)restorePreviousFrontmostApp {
+  NSRunningApplication *target = self.previousFrontmostApp;
+  self.previousFrontmostApp = nil;
+  if (target == nil || target.isTerminated) return;
+  if (target.processIdentifier == NSRunningApplication.currentApplication.processIdentifier) return;
+  // ignoringOtherApps is deprecated on macOS 14+; passing 0 still re-activates the app
+  // with the standard semantics (front of the activation order, restores key window).
+  [target activateWithOptions:0];
 }
 
 - (MZRow *)selectedItem {
@@ -1145,12 +1630,19 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 
 - (void)selectRowID:(int64_t)rowID {
   NSInteger index = [self indexOfRowID:rowID inRows:self.rows];
+  mz_debug_log(@"selectRowID rowID=%lld index=%ld", rowID, (long)index);
   if (index == NSNotFound) return;
   [self selectRowAtIndex:index focusList:YES];
 }
 
 - (BOOL)performRowAction:(MZAppAction)action rowID:(int64_t)rowID hidesPanel:(BOOL)hidesPanel {
   if (rowID == 0) return NO;
+  mz_debug_log(@"performRowAction action=%d rowID=%lld hides=%d selected=%ld scrollY=%.1f",
+               (int)action,
+               rowID,
+               hidesPanel ? 1 : 0,
+               (long)self.selectedRowIndex,
+               self.listScrollView.contentView.documentVisibleRect.origin.y);
   if (action == MZ_APP_ACTION_TOGGLE_PIN) {
     [self optimisticallyTogglePinForRowID:rowID];
   }
@@ -1171,39 +1663,52 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 
 - (void)relayoutItemViews {
   CGFloat width = self.listScrollView.contentSize.width;
-  CGFloat y = 0.0;
+  CGFloat y = kMZListTopPadding;
   for (NSUInteger i = 0; i < self.itemViews.count; i++) {
     MZClipboardCellView *view = self.itemViews[i];
     CGFloat height = [self rowHeightAtIndex:(NSInteger)i];
     view.frame = NSMakeRect(0, y, width, height);
     y += height;
   }
-  self.listContentView.frame = NSMakeRect(0, 0, width, MAX(y, self.listScrollView.contentSize.height));
+  self.listContentView.frame = NSMakeRect(0, 0, width, MAX(y + kMZListBottomPadding, self.listScrollView.contentSize.height));
 }
 
 - (void)reloadItemViews {
-  for (MZClipboardCellView *view in self.itemViews) {
-    [view removeFromSuperview];
-  }
-  [self.itemViews removeAllObjects];
-
   CGFloat width = self.listScrollView.contentSize.width;
-  CGFloat y = 0.0;
-  for (NSUInteger i = 0; i < self.rows.count; i++) {
+  CGFloat y = kMZListTopPadding;
+  NSUInteger desired = self.rows.count;
+
+  // Trim surplus cells when the new list is shorter; reuse the rest.
+  while (self.itemViews.count > desired) {
+    MZClipboardCellView *spare = self.itemViews.lastObject;
+    [spare removeFromSuperview];
+    [self.itemViews removeLastObject];
+  }
+
+  for (NSUInteger i = 0; i < desired; i++) {
     MZRow *item = self.rows[i];
     CGFloat height = [self rowHeightAtIndex:(NSInteger)i];
-    MZClipboardCellView *view = [[MZClipboardCellView alloc] initWithFrame:NSMakeRect(0, y, width, height)];
-    view.identifier = [NSString stringWithFormat:@"clipboard-item-%lu", (unsigned long)i];
+    NSRect frame = NSMakeRect(0, y, width, height);
+
+    MZClipboardCellView *view;
+    if (i < self.itemViews.count) {
+      view = self.itemViews[i];
+      if (!NSEqualRects(view.frame, frame)) view.frame = frame;
+    } else {
+      view = [[MZClipboardCellView alloc] initWithFrame:frame];
+      view.identifier = [NSString stringWithFormat:@"clipboard-item-%lu", (unsigned long)i];
+      [self.listContentView addSubview:view];
+      [self.itemViews addObject:view];
+    }
+
     [view configureWithRow:item
                   selected:((NSInteger)i == self.selectedRowIndex)
                     target:self
                       icon:[self iconForRow:item]
               revealEnabled:[self rowSupportsReveal:item]];
-    [self.listContentView addSubview:view];
-    [self.itemViews addObject:view];
     y += height;
   }
-  self.listContentView.frame = NSMakeRect(0, 0, width, MAX(y, self.listScrollView.contentSize.height));
+  self.listContentView.frame = NSMakeRect(0, 0, width, MAX(y + kMZListBottomPadding, self.listScrollView.contentSize.height));
 }
 
 - (void)refreshVisibleSelectionState {
@@ -1232,13 +1737,40 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 
 - (void)scrollSelectedRowToVisible {
   if (self.selectedRowIndex < 0 || self.selectedRowIndex >= (NSInteger)self.itemViews.count) return;
-  NSRect targetRect = self.itemViews[(NSUInteger)self.selectedRowIndex].frame;
-  [self.listContentView scrollRectToVisible:targetRect];
+  MZClipboardCellView *view = self.itemViews[(NSUInteger)self.selectedRowIndex];
+  NSClipView *clipView = self.listScrollView.contentView;
+  if (view == nil || clipView == nil) return;
+
+  NSRect targetRect = view.frame;
+  NSRect visibleRect = clipView.documentVisibleRect;
+  if (NSContainsRect(visibleRect, targetRect) || NSIntersectsRect(visibleRect, targetRect)) {
+    if (NSMinY(targetRect) >= NSMinY(visibleRect) && NSMaxY(targetRect) <= NSMaxY(visibleRect)) return;
+  }
+
+  NSPoint newOrigin = visibleRect.origin;
+  if (NSMinY(targetRect) < NSMinY(visibleRect)) {
+    newOrigin.y = NSMinY(targetRect);
+  } else if (NSMaxY(targetRect) > NSMaxY(visibleRect)) {
+    newOrigin.y = NSMaxY(targetRect) - NSHeight(visibleRect);
+  } else {
+    return;
+  }
+
+  CGFloat maxOffset = MAX(0.0, NSHeight(self.listContentView.bounds) - NSHeight(visibleRect));
+  newOrigin.y = MIN(MAX(0.0, newOrigin.y), maxOffset);
+  [clipView scrollToPoint:newOrigin];
+  [self.listScrollView reflectScrolledClipView:clipView];
 }
 
 - (void)selectRowAtIndex:(NSInteger)index focusList:(BOOL)focusList {
   if (self.rows.count == 0) return;
   NSInteger bounded = MAX(0, MIN(index, (NSInteger)self.rows.count - 1));
+  mz_debug_log(@"selectRowAtIndex requested=%ld bounded=%ld previous=%ld focusList=%d scrollY=%.1f",
+               (long)index,
+               (long)bounded,
+               (long)self.selectedRowIndex,
+               focusList ? 1 : 0,
+               self.listScrollView.contentView.documentVisibleRect.origin.y);
   if (bounded == self.selectedRowIndex && !focusList) return;
   NSInteger previous = self.selectedRowIndex;
   self.selectedRowIndex = bounded;
@@ -1317,8 +1849,10 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)updateCountLabel {
+  // Pull every label fresh through mz_t so it tracks language changes as well.
   NSUInteger count = self.rows.count;
-  self.countLabel.stringValue = [NSString stringWithFormat:@"%lu %@", (unsigned long)count, count == 1 ? @"item" : @"items"];
+  NSString *unit = mz_t(count == 1 ? @"item" : @"items");
+  self.countLabel.stringValue = [NSString stringWithFormat:@"%lu %@", (unsigned long)count, unit];
 }
 
 - (NSComparisonResult)compareRow:(MZRow *)lhs withRow:(MZRow *)rhs {
@@ -1360,6 +1894,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 - (void)selectRowForItemView:(MZClipboardCellView *)sender {
   MZRow *row = [sender.objectValue isKindOfClass:[MZRow class]] ? sender.objectValue : nil;
   if (row == nil) return;
+  mz_debug_log(@"selectRowForItemView rowID=%lld title=%@", row.rowID, row.title);
   [self selectRowID:row.rowID];
 }
 
@@ -1405,6 +1940,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)pasteRow:(MZRowActionButton *)sender {
+  mz_debug_log(@"pasteRow button rowID=%lld", sender.rowID);
   [self selectRowID:sender.rowID];
   [self performRowAction:MZ_APP_ACTION_PASTE rowID:sender.rowID hidesPanel:YES];
 }
@@ -1442,6 +1978,63 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 - (void)quitApplication:(id)sender {
   (void)sender;
   mz_app_dispatch_action(self, MZ_APP_ACTION_QUIT, 0);
+}
+
+- (void)switchLanguageToEnglish:(id)sender {
+  (void)sender;
+  mz_lang_set(MZLangEnglish);
+}
+
+- (void)switchLanguageToChinese:(id)sender {
+  (void)sender;
+  mz_lang_set(MZLangChinese);
+}
+
+- (void)handleLanguageChange:(NSNotification *)note {
+  (void)note;
+  [self applyLocalization];
+}
+
+- (void)applyLocalization {
+  // Re-translate every static string we can reach. Per-row subtitles are reset
+  // through reloadItemViews below, which calls mz_subtitle_for_row again.
+  if (self.statusItem != nil) self.statusItem.button.toolTip = mz_t(@"Maccy");
+  if (self.pinButton != nil) self.pinButton.toolTip = mz_t(@"Keep window on top");
+  if (self.searchField != nil) self.searchField.placeholderString = mz_t(@"Search clipboard history...");
+
+  // Filter tabs (4 main + favorites). Order in self.filterButtons matches insertion.
+  if (self.filterButtons.count >= 5) {
+    NSArray<NSString *> *tabs = @[ mz_t(@"All"), mz_t(@"Text"), mz_t(@"Links"), mz_t(@"Images") ];
+    for (NSUInteger i = 0; i < tabs.count; i++) self.filterButtons[i].title = tabs[i];
+    self.filterButtons[4].title = mz_t(@"☆  Favorites");
+    [self updateFilterButtons];
+  }
+
+  // Footer button.
+  if (self.clearButton != nil) self.clearButton.title = mz_t(@"Clear All");
+
+  // Actions menu items (preserve our well-known order).
+  if (self.actionsMenu.itemArray.count >= 9) {
+    self.actionsMenu.itemArray[0].title = mz_t(@"Toggle Favorite");
+    self.actionsMenu.itemArray[1].title = mz_t(@"Paste as Plain Text");
+    self.actionsMenu.itemArray[2].title = mz_t(@"Reveal");
+    // index 3 is a separator
+    self.actionsMenu.itemArray[4].title = mz_t(@"Clear Unpinned");
+    self.actionsMenu.itemArray[5].title = mz_t(@"Clear All");
+    // index 6 is a separator
+    self.actionsMenu.itemArray[7].title = mz_t(@"Language");
+  }
+  // Sync the radio-style state on the language submenu.
+  if (self.languageMenuItem.submenu.itemArray.count >= 2) {
+    NSMenuItem *enItem = self.languageMenuItem.submenu.itemArray[0];
+    NSMenuItem *zhItem = self.languageMenuItem.submenu.itemArray[1];
+    enItem.state = (gLang == MZLangEnglish) ? NSControlStateValueOn : NSControlStateValueOff;
+    zhItem.state = (gLang == MZLangChinese) ? NSControlStateValueOn : NSControlStateValueOff;
+  }
+
+  // Re-render rows so subtitles + count label refresh.
+  [self updateCountLabel];
+  [self reloadItemViews];
 }
 
 - (void)clearSearch:(id)sender {
@@ -1573,7 +2166,21 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 
 - (void)controlTextDidChange:(NSNotification *)obj {
   if (obj.object != self.searchField) return;
-  if (self.callbacks.on_search) self.callbacks.on_search(self.searchField.stringValue.UTF8String);
+  if (self.callbacks.on_search == NULL) return;
+  // Coalesce rapid keystrokes; only the last query within the debounce window runs the
+  // DB refresh. Schedule on common modes so we still fire while AppKit is in the
+  // event-tracking run loop mode during typing.
+  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(dispatchPendingSearch:) object:nil];
+  [self performSelector:@selector(dispatchPendingSearch:)
+             withObject:nil
+             afterDelay:0.03
+                inModes:@[ NSRunLoopCommonModes ]];
+}
+
+- (void)dispatchPendingSearch:(id)sender {
+  (void)sender;
+  if (self.callbacks.on_search == NULL || self.searchField == nil) return;
+  self.callbacks.on_search(self.searchField.stringValue.UTF8String);
 }
 
 - (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
@@ -1616,6 +2223,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 
 void mz_app_run(MZAppCallbacks callbacks) {
   @autoreleasepool {
+    mz_lang_load();
     NSApplication *app = [NSApplication sharedApplication];
     gController = [[MZAppController alloc] initWithCallbacks:callbacks];
     app.delegate = gController;
@@ -1670,6 +2278,11 @@ void mz_app_set_rows(const MZAppRow *rows, size_t count) {
     [copy addObject:row];
   }
 
+  // Tracing this single boundary lets us tell from `/tmp/maccy-debug.log` whether
+  // a "stale panel" report is upstream (Zig never pushed) or downstream (push
+  // happened but the apply block never ran).
+  mz_debug_log(@"set_rows count=%zu", count);
+
   dispatch_async(dispatch_get_main_queue(), ^{
     int64_t selectedRowID = 0;
     MZRow *selected = [gController selectedItem];
@@ -1677,7 +2290,13 @@ void mz_app_set_rows(const MZAppRow *rows, size_t count) {
 
     gController.allRows = copy;
     [gController applyCurrentFilterPreservingSelection:selectedRowID];
+    mz_debug_log(@"set_rows applied count=%lu selected=%lld",
+                 (unsigned long)copy.count, selectedRowID);
   });
+}
+
+void mz_app_invalidate_preview_cache(void) {
+  [mz_preview_cache() removeAllObjects];
 }
 
 void mz_app_reveal_target(const char *target) {

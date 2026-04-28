@@ -59,6 +59,10 @@ void mz_app_set_status_text(const char *text);
 void mz_app_reveal_target(const char *target);
 const unsigned char *mz_app_copy_image_preview(int64_t row_id, size_t *len_out);
 void mz_app_free_buffer(const unsigned char *buffer, size_t len);
+/// Drop all cached preview thumbnails. Must be called after history rows are
+/// deleted because SQLite reuses INTEGER PRIMARY KEY values, so a stale cache
+/// entry could otherwise serve the old image for a brand-new row.
+void mz_app_invalidate_preview_cache(void);
 
 #ifdef __cplusplus
 }
