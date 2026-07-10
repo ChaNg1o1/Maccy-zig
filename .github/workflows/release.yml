@@ -54,6 +54,7 @@ jobs:
           fi
 
           echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
+          echo "RELEASE_VERSION=${release_tag#v}" >> "$GITHUB_ENV"
           echo "PRERELEASE=$prerelease" >> "$GITHUB_ENV"
           echo "ZIP_PATH=dist/MaccyZig-${release_tag}-macOS.zip" >> "$GITHUB_ENV"
           echo "SHA_PATH=dist/MaccyZig-${release_tag}-macOS.zip.sha256" >> "$GITHUB_ENV"
@@ -62,16 +63,18 @@ jobs:
         run: zig build test
 
       - name: Package app
-        run: ./scripts/package-app.sh
+        run: VERSION="$RELEASE_VERSION" ./scripts/package-app.sh
 
       - name: Verify packaged app
         run: ./scripts/smoke-package.sh
+        env:
+          APP: dist/MaccyZig.app
 
       - name: Create downloadable archive
         shell: bash
         run: |
           set -euo pipefail
-          ditto -c -k --keepParent "dist/Maccy.app" "$ZIP_PATH"
+          ditto -c -k --keepParent "dist/MaccyZig.app" "$ZIP_PATH"
           shasum -a 256 "$ZIP_PATH" > "$SHA_PATH"
 
       - name: Write release notes
@@ -95,9 +98,23 @@ jobs:
 
           ## Download
 
-          Download \`MaccyZig-${RELEASE_TAG}-macOS.zip\` from this release, unzip it, then move \`Maccy.app\` to \`/Applications\`.
+          Download \`MaccyZig-${RELEASE_TAG}-macOS.zip\` from this release, unzip it, then move \`MaccyZig.app\` to \`/Applications\`.
 
-          This build is ad-hoc signed in CI. macOS may still show a security prompt the first time you open it.
+          ## First launch (required — the app is not notarized)
+
+          This build is ad-hoc signed, so macOS Gatekeeper will refuse to open
+          it with an "Apple could not verify" dialog. To open it the first time:
+
+          1. Double-click \`MaccyZig.app\` once (the dialog appears — close it).
+          2. Open **System Settings → Privacy & Security**, scroll down, and
+             click **Open Anyway** next to the MaccyZig message.
+          3. Confirm in the dialog that follows. This is only needed once.
+
+          Alternatively, from a terminal:
+
+          \`\`\`sh
+          xattr -d com.apple.quarantine /Applications/MaccyZig.app
+          \`\`\`
 
           ## Verification
 
@@ -109,8 +126,9 @@ jobs:
 
           ## Requirements
 
-          - macOS 14 or newer
-          - Accessibility permission may be required for paste actions
+          - macOS 14 or newer (universal: Apple Silicon + Intel)
+          - Accessibility permission is required for auto-paste (the app will
+            guide you on first paste)
           EOF
 
       - name: Upload build artifact
@@ -139,4 +157,11 @@ jobs:
           if [ "$PRERELEASE" = "true" ]; then
             args+=(--prerelease)
           fi
-          gh release create "${args[@]}"
+          # Idempotent: re-running the job for an existing release replaces
+          # its assets instead of failing and leaving a half-published state.
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$ZIP_PATH" "$SHA_PATH" --clobber
+            gh release edit "$RELEASE_TAG" --notes-file dist/release-notes.md
+          else
+            gh release create "${args[@]}"
+          fi

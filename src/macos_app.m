@@ -1,9 +1,22 @@
 #import "macos_app.h"
+#import "macos_hotkey.h"
 #import "macos_paste.h"
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <mach/mach_time.h>
 #import <stdarg.h>
+
+// Serial queue for every Zig callback that touches SQLite. Keeps multi-MB
+// capture work (snapshot copy + SHA-256 + insert) and cascading DELETEs off
+// the main thread, and serializes all database access on one queue.
+static dispatch_queue_t mz_db_queue(void) {
+  static dispatch_queue_t queue;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    queue = dispatch_queue_create("io.github.chang1o1.MaccyZig.db", DISPATCH_QUEUE_SERIAL);
+  });
+  return queue;
+}
 
 typedef NS_ENUM(NSInteger, MZFilterMode) {
   MZFilterModeAll = 0,
@@ -101,8 +114,16 @@ static NSString *mz_t(NSString *en) {
       @"Clear Unpinned": @"清空未固定",
       @"Language": @"语言",
       @"History Limit": @"历史数量上限",
+      @"Hotkey": @"全局快捷键",
+      @"Disabled": @"禁用",
       @"English": @"English",
       @"中文": @"中文",
+      // Clear-all confirmation
+      @"Clear all clipboard history?": @"清空全部剪贴板历史？",
+      @"This removes every item, including favorites. This cannot be undone.":
+        @"这将删除所有条目（包括收藏），且无法撤销。",
+      @"Hotkey registration failed. Another app may already be using this shortcut.":
+        @"快捷键注册失败，可能已被其他应用占用。",
       // Accessibility permission alert
       @"Grant Accessibility Permission…": @"申请辅助功能权限…",
       @"Accessibility permission required": @"需要辅助功能权限",
@@ -174,10 +195,14 @@ static BOOL mz_app_is_enter_event(NSEvent *event) {
   return event.keyCode == 36 || event.keyCode == 76;
 }
 
+// Match by the layout-resolved character first: hardware keyCodes name
+// different characters on non-QWERTY layouts, and an OR of both means e.g.
+// Dvorak's ⌘T could trigger the destructive Clear All bound to keyCode 40.
+// The keyCode is only a fallback for events that carry no characters.
 static BOOL mz_app_matches_command_key(NSEvent *event, unsigned short keyCode, NSString *fallback) {
-  if (event.keyCode == keyCode) return YES;
   NSString *characters = event.charactersIgnoringModifiers.lowercaseString ?: @"";
-  return [characters isEqualToString:(fallback ?: @"")];
+  if (characters.length > 0) return [characters isEqualToString:(fallback ?: @"")];
+  return event.keyCode == keyCode;
 }
 
 static NSTextField *mz_label(NSString *text, NSFont *font, NSColor *color) {
@@ -345,6 +370,19 @@ static NSString *mz_string_from_utf8_or_fallback(const char *value, NSString *fa
   NSString *string = [NSString stringWithUTF8String:value];
   if (string != nil) return string;
   return fallback ?: @"";
+}
+
+// The two star glyphs are requested for every row configure; building a fresh
+// NSImage + symbol configuration each time is measurable on the scroll path.
+static NSImage *mz_star_image(BOOL filled) {
+  static NSImage *star = nil;
+  static NSImage *starFill = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    star = mz_symbol_image(@"star", 18.0);
+    starFill = mz_symbol_image(@"star.fill", 18.0);
+  });
+  return filled ? starFill : star;
 }
 
 static NSTableView *mz_enclosing_table_view(NSView *view) {
@@ -603,6 +641,7 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
 @property(nonatomic, strong) NSPopover *previewPopover;
 @property(nonatomic) BOOL previewEnabled;
 @property(nonatomic) NSInteger rowIndex;
+@property(nonatomic) NSUInteger configuredGeneration;
 @property(nonatomic, weak) id interactionTarget;
 - (void)configureWithRow:(MZRow *)row
                 selected:(BOOL)selected
@@ -628,6 +667,11 @@ static BOOL mz_view_is_descendant_of(NSView *view, NSView *ancestor) {
   return NO;
 }
 
+// Interaction tracing for development only. The log records clipboard item
+// titles, so in release builds it must not exist: shipping a world-readable
+// /tmp file with clipboard contents is a privacy leak. The macro form also
+// keeps release builds from evaluating the format arguments.
+#if MZ_ENABLE_DEBUG_LOG
 static void mz_debug_log(NSString *format, ...) {
   if (format == nil) return;
   va_list args;
@@ -660,6 +704,9 @@ static void mz_debug_log(NSString *format, ...) {
     [fh closeFile];
   }
 }
+#else
+#define mz_debug_log(...) ((void)0)
+#endif
 
 - (BOOL)acceptsFirstMouse:(NSEvent *)event {
   (void)event;
@@ -686,6 +733,9 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
   dispatch_once(&once, ^{
     cache = [NSCache new];
     cache.countLimit = 96;  // a few screens worth of hovered image rows
+    // Entries are stored with their encoded byte size as cost; without a
+    // ceiling, 96 multi-MB decoded screenshots pin hundreds of MB of memory.
+    cache.totalCostLimit = 64 * 1024 * 1024;
   });
   return cache;
 }
@@ -694,8 +744,13 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
   NSNumber *cacheKey = @(row.rowID);
   NSImage *image = [mz_preview_cache() objectForKey:cacheKey];
   if (image == nil) {
-    size_t len = 0;
-    const unsigned char *bytes = mz_app_copy_image_preview(row.rowID, &len);
+    // Database reads are serialized on the db queue; hop over synchronously
+    // so this hover path can't interleave with a capture in progress.
+    __block const unsigned char *bytes = NULL;
+    __block size_t len = 0;
+    dispatch_sync(mz_db_queue(), ^{
+      bytes = mz_app_copy_image_preview(row.rowID, &len);
+    });
     if (bytes == NULL || len == 0) return nil;
 
     NSData *data = [NSData dataWithBytes:bytes length:len];
@@ -896,7 +951,7 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
   self.favoriteButton.target = target;
   self.favoriteButton.action = @selector(togglePinFromButton:);
   self.favoriteButton.rowID = row.rowID;
-  self.favoriteButton.image = mz_symbol_image(row.pinned ? @"star.fill" : @"star", 18.0);
+  self.favoriteButton.image = mz_star_image(row.pinned);
   self.favoriteButton.contentTintColor = row.pinned ? mz_warning_yellow() : mz_text_secondary();
 
   self.rowButton.target = target;
@@ -1212,8 +1267,12 @@ static const CGFloat kMZPanelMinHeight = 460.0;
 @property(nonatomic, strong) NSView *favoritesCard;
 @property(nonatomic, strong) NSView *listCard;
 @property(nonatomic, strong) NSView *clearHint;
+@property(nonatomic, strong) NSMenuItem *hotkeyMenuItem;
 @property(nonatomic) MZFilterMode filterMode;
 @property(nonatomic) NSUInteger filterChangeGeneration;
+// Bumped whenever self.rows is rebuilt; visible cells remember the generation
+// they were configured against so the scroll path can skip reconfiguration.
+@property(nonatomic) NSUInteger rowsGeneration;
 @property(nonatomic) NSInteger selectedRowIndex;
 @property(nonatomic) NSInteger maxItemsLimit;
 @property(nonatomic) BOOL windowPinned;
@@ -1235,31 +1294,33 @@ static int mz_app_target_pid_for_action(MZAppController *controller, MZAppAction
 
 static void mz_app_dispatch_action(MZAppController *controller, MZAppAction action, int64_t rowID) {
   int target_pid = mz_app_target_pid_for_action(controller, action);
+  // All action callbacks touch SQLite on the Zig side — run them on the db
+  // queue so clears and writes never block the UI thread.
   if (controller.actionCallback != NULL) {
-    controller.actionCallback(action, rowID, target_pid);
+    MZAppActionCallback callback = controller.actionCallback;
+    dispatch_async(mz_db_queue(), ^{ callback(action, rowID, target_pid); });
     return;
   }
 
+  void (*on_select)(int64_t, int, int) = controller.callbacks.on_select;
+  void (*on_clear)(int) = controller.callbacks.on_clear;
   switch (action) {
     case MZ_APP_ACTION_COPY:
-      if (controller.callbacks.on_select) controller.callbacks.on_select(rowID, 0, 0);
+      if (on_select) dispatch_async(mz_db_queue(), ^{ on_select(rowID, 0, 0); });
       return;
-    case MZ_APP_ACTION_PASTE: {
+    case MZ_APP_ACTION_PASTE:
+    case MZ_APP_ACTION_PASTE_PLAIN: {
       // The previous frontmost app was captured in -show; passing its pid
       // through to the paste path lets us route ⌘V directly to that process
       // and bypass the frontmost-app race entirely.
-      if (controller.callbacks.on_select) controller.callbacks.on_select(rowID, 1, target_pid);
-      return;
-    }
-    case MZ_APP_ACTION_PASTE_PLAIN: {
-      if (controller.callbacks.on_select) controller.callbacks.on_select(rowID, 1, target_pid);
+      if (on_select) dispatch_async(mz_db_queue(), ^{ on_select(rowID, 1, target_pid); });
       return;
     }
     case MZ_APP_ACTION_CLEAR_UNPINNED:
-      if (controller.callbacks.on_clear) controller.callbacks.on_clear(0);
+      if (on_clear) dispatch_async(mz_db_queue(), ^{ on_clear(0); });
       return;
     case MZ_APP_ACTION_CLEAR_ALL:
-      if (controller.callbacks.on_clear) controller.callbacks.on_clear(1);
+      if (on_clear) dispatch_async(mz_db_queue(), ^{ on_clear(1); });
       return;
     case MZ_APP_ACTION_QUIT:
       if (controller.callbacks.on_quit) controller.callbacks.on_quit();
@@ -1312,7 +1373,19 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     return [strong_self handleKeyEvent:event] ? nil : event;
   }];
 
-  [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(pollTimer:) userInfo:nil repeats:YES];
+  // Common modes so capture keeps running while menus are open or the panel
+  // scrolls; tolerance lets the system coalesce wakeups for battery.
+  NSTimer *pollTimer = [NSTimer timerWithTimeInterval:0.5 target:self selector:@selector(pollTimer:) userInfo:nil repeats:YES];
+  pollTimer.tolerance = 0.1;
+  [NSRunLoop.mainRunLoop addTimer:pollTimer forMode:NSRunLoopCommonModes];
+
+  // Keep the paste target fresh: whenever the user activates another app
+  // (including while the panel floats pinned above it), that app becomes the
+  // destination for the next paste.
+  [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self
+                                                     selector:@selector(workspaceDidActivateApp:)
+                                                         name:NSWorkspaceDidActivateApplicationNotification
+                                                       object:nil];
   [self show];
 }
 
@@ -1326,11 +1399,30 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 - (void)dealloc {
   if (self.keyEventMonitor != nil) [NSEvent removeMonitor:self.keyEventMonitor];
   [NSNotificationCenter.defaultCenter removeObserver:self];
+  [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self];
+}
+
+- (void)workspaceDidActivateApp:(NSNotification *)note {
+  NSRunningApplication *app = note.userInfo[NSWorkspaceApplicationKey];
+  if (app == nil) return;
+  if (app.processIdentifier == NSRunningApplication.currentApplication.processIdentifier) return;
+  self.previousFrontmostApp = app;
 }
 
 - (void)pollTimer:(NSTimer *)timer {
   (void)timer;
-  if (self.callbacks.on_poll) self.callbacks.on_poll();
+  void (*poll)(void) = self.callbacks.on_poll;
+  if (poll == NULL) return;
+  // Skip the tick when the previous capture is still running (e.g. a huge
+  // screenshot insert) so slow polls don't queue up behind each other.
+  static dispatch_semaphore_t inflight;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ inflight = dispatch_semaphore_create(1); });
+  if (dispatch_semaphore_wait(inflight, DISPATCH_TIME_NOW) != 0) return;
+  dispatch_async(mz_db_queue(), ^{
+    poll();
+    dispatch_semaphore_signal(inflight);
+  });
 }
 
 - (void)buildPanel {
@@ -1623,6 +1715,28 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   [self.actionsMenu addItem:historyRoot];
   self.historyLimitMenuItem = historyRoot;
 
+  // Popup hotkey presets. The historical default ⌘⇧V shadows "Paste and
+  // Match Style" system-wide, so users need a first-class way off it.
+  NSMenuItem *hotkeyRoot = [[NSMenuItem alloc] initWithTitle:mz_t(@"Hotkey") action:NULL keyEquivalent:@""];
+  hotkeyRoot.image = mz_menu_symbol_image(@"keyboard");
+  NSMenu *hotkeyMenu = [[NSMenu alloc] initWithTitle:@"Hotkey"];
+  NSArray<NSArray<NSString *> *> *hotkeyPresets = @[
+    @[ @"⌘⇧V", @"cmd-shift-v" ],
+    @[ @"⌃⇧V", @"ctrl-shift-v" ],
+    @[ @"⌥⌘V", @"opt-cmd-v" ],
+    @[ mz_t(@"Disabled"), @"disabled" ],
+  ];
+  for (NSArray<NSString *> *preset in hotkeyPresets) {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:preset[0] action:@selector(changeHotkeyPreset:) keyEquivalent:@""];
+    item.target = self;
+    item.representedObject = preset[1];
+    [hotkeyMenu addItem:item];
+  }
+  hotkeyRoot.submenu = hotkeyMenu;
+  [self.actionsMenu addItem:hotkeyRoot];
+  self.hotkeyMenuItem = hotkeyRoot;
+  [self updateHotkeyMenu];
+
   [self.actionsMenu addItem:[NSMenuItem separatorItem]];
   NSMenuItem *axItem = [[NSMenuItem alloc]
       initWithTitle:mz_t(@"Grant Accessibility Permission…")
@@ -1829,7 +1943,16 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)show {
+  // Open on the display the user is working on (the one holding the mouse),
+  // not whichever screen owns the key window.
+  NSPoint mouse = NSEvent.mouseLocation;
   NSScreen *screen = NSScreen.mainScreen;
+  for (NSScreen *candidate in NSScreen.screens) {
+    if (NSMouseInRect(mouse, candidate.frame, NO)) {
+      screen = candidate;
+      break;
+    }
+  }
   NSRect sf = screen.visibleFrame;
   NSRect pf = self.panel.frame;
   pf.origin.x = NSMidX(sf) - pf.size.width * 0.5;
@@ -1847,7 +1970,8 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   // left over from the previous session.
   if (self.searchField.stringValue.length > 0) {
     self.searchField.stringValue = @"";
-    if (self.callbacks.on_search) self.callbacks.on_search("");
+    void (*search)(const char *) = self.callbacks.on_search;
+    if (search != NULL) dispatch_async(mz_db_queue(), ^{ search(""); });
   }
   // Force a visual refresh of the selection even if the controller already had
   // row 0 marked selected (selectRowAtIndex early-returns when nothing changes).
@@ -1878,10 +2002,9 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     [self.listScrollView reflectScrolledClipView:clipView];
   }
 
-  if (self.callbacks.on_toggle) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-      if (self.callbacks.on_toggle) self.callbacks.on_toggle();
-    });
+  void (*toggle)(void) = self.callbacks.on_toggle;
+  if (toggle != NULL) {
+    dispatch_async(mz_db_queue(), ^{ toggle(); });
   }
 }
 
@@ -1936,10 +2059,12 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     [self optimisticallyTogglePinForRowID:rowID];
   }
   if (hidesPanel) [self hide];
-  // Re-pin the snapshot for the duration of dispatch so PASTE can read it.
+  // Re-pin the snapshot so PASTE can read it, and leave it in place after
+  // dispatch: nulling it here made any non-hiding action (star toggle, ⌘P,
+  // Reveal) destroy the paste target for the rest of the session. The
+  // workspace-activation observer keeps the property fresh from here on.
   self.previousFrontmostApp = snapshot;
   mz_app_dispatch_action(self, action, rowID);
-  self.previousFrontmostApp = nil;
   return YES;
 }
 
@@ -2020,7 +2145,6 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)updateVisibleItemViews {
-  uint64_t t0 = mach_absolute_time();
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
 
@@ -2049,24 +2173,22 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     NSRect frame = [self frameForRowAtIndex:index];
     if (!NSEqualRects(view.frame, frame)) view.frame = frame;
     MZRow *item = self.rows[(NSUInteger)index];
+    // Scroll fast path: a cell that already shows this row for the current
+    // rows generation only needs its selection chrome diffed, not a full
+    // reconfigure (symbol images, date formatting, forced layout).
+    if (view.objectValue == item && view.configuredGeneration == self.rowsGeneration) {
+      [view applySelectedAppearance:(index == self.selectedRowIndex)];
+      continue;
+    }
     [view configureWithRow:item
                   selected:(index == self.selectedRowIndex)
                     target:self
                       icon:[self iconForRow:item]
               revealEnabled:[self rowSupportsReveal:item]];
+    view.configuredGeneration = self.rowsGeneration;
   }
 
   [CATransaction commit];
-  static mach_timebase_info_data_t tb = {0, 0};
-  if (tb.denom == 0) mach_timebase_info(&tb);
-  uint64_t ns = (mach_absolute_time() - t0) * tb.numer / tb.denom;
-  mz_debug_log(@"visible_item_views_ns=%llu rows=%lu visible=%ld-%ld views=%lu reuse=%lu",
-               (unsigned long long)ns,
-               (unsigned long)self.rows.count,
-               (long)start,
-               (long)end,
-               (unsigned long)self.itemViews.count,
-               (unsigned long)self.reusableItemViews.count);
 }
 
 - (void)listScrollViewDidScroll:(NSNotification *)notification {
@@ -2083,20 +2205,13 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   // O(N) configureWithRow per cell with implicit Core Animation transactions,
   // which on N≈200 rows pushed visible repaint into 50–200ms territory.
   // Wrap the rebuild in a single transaction with disabled actions to skip
-  // CALayer animation queueing, and batch the timing in a debug log so we
-  // can sanity-check the path on a real device.
-  uint64_t t0 = mach_absolute_time();
+  // CALayer animation queueing.
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
 
   [self updateVisibleItemViews];
 
   [CATransaction commit];
-  static mach_timebase_info_data_t tb = {0, 0};
-  if (tb.denom == 0) mach_timebase_info(&tb);
-  uint64_t ns = (mach_absolute_time() - t0) * tb.numer / tb.denom;
-  mz_debug_log(@"reload_item_views_ns=%llu rows=%lu",
-               (unsigned long long)ns, (unsigned long)self.rows.count);
 }
 
 - (void)refreshVisibleSelectionState {
@@ -2109,6 +2224,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
                     target:self
                       icon:[self iconForRow:item]
               revealEnabled:[self rowSupportsReveal:item]];
+    view.configuredGeneration = self.rowsGeneration;
   }
 }
 
@@ -2122,6 +2238,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
                   target:self
                     icon:[self iconForRow:item]
             revealEnabled:[self rowSupportsReveal:item]];
+  view.configuredGeneration = self.rowsGeneration;
 }
 
 - (void)scrollSelectedRowToVisible {
@@ -2166,16 +2283,10 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   // Fast path: only the selection chrome changes, so flip layer attrs on the
   // two affected cells. No full reconfigure, no relayout (row height is a
   // constant; frames don't move).
-  uint64_t t0 = mach_absolute_time();
   MZClipboardCellView *previousView = [self visibleItemViewForRowIndex:previous];
   MZClipboardCellView *boundedView = [self visibleItemViewForRowIndex:bounded];
   if (previousView != nil) [previousView applySelectedAppearance:NO];
   if (boundedView != nil) [boundedView applySelectedAppearance:YES];
-  static mach_timebase_info_data_t tb = {0, 0};
-  if (tb.denom == 0) mach_timebase_info(&tb);
-  uint64_t ns = (mach_absolute_time() - t0) * tb.numer / tb.denom;
-  mz_debug_log(@"selection_repaint_ns=%llu rows=%lu", (unsigned long long)ns,
-               (unsigned long)self.itemViews.count);
   [self scrollSelectedRowToVisible];
   boundedView = [self visibleItemViewForRowIndex:bounded];
   if (boundedView != nil) [boundedView applySelectedAppearance:YES];
@@ -2202,6 +2313,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)applyCurrentFilterPreservingSelection:(int64_t)selectedRowID {
+  self.rowsGeneration += 1;
   [self.rows removeAllObjects];
   for (MZRow *row in self.allRows) {
     BOOL include = NO;
@@ -2399,6 +2511,14 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 
 - (void)clearAll:(id)sender {
   (void)sender;
+  // Wipes everything including favorites with no undo — confirm first.
+  NSAlert *alert = [[NSAlert alloc] init];
+  alert.alertStyle = NSAlertStyleWarning;
+  alert.messageText = mz_t(@"Clear all clipboard history?");
+  alert.informativeText = mz_t(@"This removes every item, including favorites. This cannot be undone.");
+  [alert addButtonWithTitle:mz_t(@"Clear All")];
+  [alert addButtonWithTitle:mz_t(@"Cancel")];
+  if ([alert runModal] != NSAlertFirstButtonReturn) return;
   mz_app_dispatch_action(self, MZ_APP_ACTION_CLEAR_ALL, 0);
 }
 
@@ -2428,14 +2548,40 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   self.maxItemsLimit = value;
   [NSUserDefaults.standardUserDefaults setInteger:value forKey:kMZMaxItemsDefaultsKey];
   [self updateHistoryLimitMenu];
-  if (self.callbacks.on_max_items_change != NULL) {
-    self.callbacks.on_max_items_change((int64_t)value);
+  void (*on_change)(int64_t) = self.callbacks.on_max_items_change;
+  if (on_change != NULL) {
+    // Shrinking the limit can cascade-delete thousands of rows; keep that off
+    // the main thread.
+    dispatch_async(mz_db_queue(), ^{ on_change((int64_t)value); });
   }
 }
 
 - (void)handleLanguageChange:(NSNotification *)note {
   (void)note;
   [self applyLocalization];
+}
+
+- (void)changeHotkeyPreset:(NSMenuItem *)sender {
+  NSString *presetId = sender.representedObject;
+  if (presetId.length == 0) return;
+  int status = mz_hotkey_apply_preset(presetId.UTF8String);
+  [self updateHotkeyMenu];
+  if (status != 0) {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = mz_t(@"Hotkey registration failed. Another app may already be using this shortcut.");
+    [alert addButtonWithTitle:mz_t(@"OK")];
+    [alert runModal];
+  }
+}
+
+- (void)updateHotkeyMenu {
+  if (self.hotkeyMenuItem == nil) return;
+  self.hotkeyMenuItem.title = mz_t(@"Hotkey");
+  NSString *current = [NSUserDefaults.standardUserDefaults stringForKey:@"MZHotkeyPreset"] ?: @"cmd-shift-v";
+  for (NSMenuItem *item in self.hotkeyMenuItem.submenu.itemArray) {
+    item.state = [current isEqualToString:item.representedObject] ? NSControlStateValueOn : NSControlStateValueOff;
+  }
 }
 
 - (void)updateHistoryLimitMenu {
@@ -2448,6 +2594,8 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)applyLocalization {
+  // Row subtitles are language-dependent; force a full cell reconfigure.
+  self.rowsGeneration += 1;
   // Re-translate every static string we can reach. Per-row subtitles are reset
   // through reloadItemViews below, which calls mz_subtitle_for_row again.
   if (self.statusItem != nil) self.statusItem.button.toolTip = mz_t(@"Maccy");
@@ -2480,9 +2628,16 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     self.actionsMenu.itemArray[4].title = mz_t(@"Clear Unpinned");
     self.actionsMenu.itemArray[5].title = mz_t(@"Clear All");
     self.actionsMenu.itemArray[7].title = mz_t(@"Language");
-    self.actionsMenu.itemArray[10].title = mz_t(@"Grant Accessibility Permission…");
+  }
+  // Items appended after the fixed prefix are re-translated through their own
+  // update helpers, which look the items up by property instead of index.
+  for (NSMenuItem *item in self.actionsMenu.itemArray) {
+    if (item.action == @selector(requestAccessibilityPermission:)) {
+      item.title = mz_t(@"Grant Accessibility Permission…");
+    }
   }
   [self updateHistoryLimitMenu];
+  [self updateHotkeyMenu];
   // Sync the radio-style state on the language submenu.
   if (self.languageMenuItem.submenu.itemArray.count >= 2) {
     NSMenuItem *enItem = self.languageMenuItem.submenu.itemArray[0];
@@ -2500,11 +2655,21 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   (void)sender;
   if (self.searchField.stringValue.length == 0) return;
   self.searchField.stringValue = @"";
-  if (self.callbacks.on_search) self.callbacks.on_search("");
+  void (*search)(const char *) = self.callbacks.on_search;
+  if (search != NULL) dispatch_async(mz_db_queue(), ^{ search(""); });
 }
 
 - (BOOL)handleKeyEvent:(NSEvent *)event {
   if (!self.panel.isVisible) return NO;
+
+  NSResponder *first = self.panel.firstResponder;
+  NSText *editor = [first isKindOfClass:[NSText class]] ? (NSText *)first : nil;
+  // While an input method is composing (Chinese/Japanese/Korean marked text),
+  // every key — Enter, arrows, Escape — belongs to the IME. Intercepting them
+  // here would commit/paste mid-composition and make CJK search unusable.
+  if ([first isKindOfClass:[NSTextView class]] && ((NSTextView *)first).hasMarkedText) {
+    return NO;
+  }
 
   NSEventModifierFlags modifiers = mz_app_modifier_flags(event);
   BOOL hasCommand = (modifiers & NSEventModifierFlagCommand) != 0;
@@ -2523,15 +2688,14 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   // ⌘A / ⌘C / ⌘X / ⌘V inside the search field: we don't ship an Edit menu,
   // so AppKit never dispatches the standard responder-chain action. Forward
   // them to the focused field editor manually so text selection / clipboard
-  // round-tripping works as users expect.
-  if (hasCommand && !hasOption && !hasShift) {
-    NSResponder *first = self.panel.firstResponder;
-    NSText *editor = [first isKindOfClass:[NSText class]] ? (NSText *)first : nil;
-    if (editor != nil) {
-      if (mz_app_matches_command_key(event, 0, @"a")) { [editor selectAll:nil]; return YES; }
-      if (mz_app_matches_command_key(event, 8, @"c")) { [editor copy:nil]; return YES; }
-      if (mz_app_matches_command_key(event, 7, @"x")) { [editor cut:nil]; return YES; }
-    }
+  // round-tripping works as users expect. ⌘V goes to the editor too — pasting
+  // INTO the search box must win over "paste selected history item" (which
+  // stays reachable via Enter).
+  if (hasCommand && !hasOption && !hasShift && editor != nil) {
+    if (mz_app_matches_command_key(event, 0, @"a")) { [editor selectAll:nil]; return YES; }
+    if (mz_app_matches_command_key(event, 8, @"c")) { [editor copy:nil]; return YES; }
+    if (mz_app_matches_command_key(event, 7, @"x")) { [editor cut:nil]; return YES; }
+    if (mz_app_matches_command_key(event, 9, @"v")) { [editor paste:nil]; return YES; }
   }
   if (hasCommand && mz_app_matches_command_key(event, 40, @"k")) {
     [self clearAll:nil];
@@ -2549,24 +2713,28 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   }
 
   if (!hasCommand && !hasOption) {
+    // Keep focus in the search field while arrowing through results — typing
+    // must keep working. Explicit list focus is only taken when the user
+    // isn't editing text.
+    BOOL focusList = editor == nil;
     switch (event.keyCode) {
       case 126:
-        [self moveSelectionByDelta:-1 focusList:YES];
+        [self moveSelectionByDelta:-1 focusList:focusList];
         return YES;
       case 125:
-        [self moveSelectionByDelta:1 focusList:YES];
+        [self moveSelectionByDelta:1 focusList:focusList];
         return YES;
       case 116:
-        [self moveSelectionByPageDelta:-1 focusList:YES];
+        [self moveSelectionByPageDelta:-1 focusList:focusList];
         return YES;
       case 121:
-        [self moveSelectionByPageDelta:1 focusList:YES];
+        [self moveSelectionByPageDelta:1 focusList:focusList];
         return YES;
       case 115:
-        [self moveSelectionToBoundary:NO focusList:YES];
+        [self moveSelectionToBoundary:NO focusList:focusList];
         return YES;
       case 119:
-        [self moveSelectionToBoundary:YES focusList:YES];
+        [self moveSelectionToBoundary:YES focusList:focusList];
         return YES;
       default:
         break;
@@ -2651,8 +2819,10 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 
 - (void)dispatchPendingSearch:(id)sender {
   (void)sender;
-  if (self.callbacks.on_search == NULL || self.searchField == nil) return;
-  self.callbacks.on_search(self.searchField.stringValue.UTF8String);
+  void (*search)(const char *) = self.callbacks.on_search;
+  if (search == NULL || self.searchField == nil) return;
+  NSString *query = [self.searchField.stringValue copy];
+  dispatch_async(mz_db_queue(), ^{ search(query.UTF8String); });
 }
 
 - (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
@@ -2697,6 +2867,10 @@ void mz_app_run(MZAppCallbacks callbacks) {
   @autoreleasepool {
     mz_lang_load();
     NSApplication *app = [NSApplication sharedApplication];
+    // The whole UI is hand-painted with dark colors; without pinning the
+    // appearance, system-drawn surfaces (popovers, alerts, menus) render
+    // light-on-light for light-mode users — the hover preview was unreadable.
+    app.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     gController = [[MZAppController alloc] initWithCallbacks:callbacks];
     app.delegate = gController;
     [app run];
@@ -2723,8 +2897,10 @@ void mz_app_hide(void) {
 }
 
 void mz_app_set_status_text(const char *text) {
+  // Copy before dispatching: the caller (Zig) may free the buffer as soon as
+  // this function returns, long before the block runs on the main queue.
+  NSString *value = text ? ([NSString stringWithUTF8String:text] ?: @"M") : @"M";
   dispatch_async(dispatch_get_main_queue(), ^{
-    NSString *value = text ? [NSString stringWithUTF8String:text] : @"M";
     if (gController.statusItem.button.image != nil) {
       gController.statusItem.button.toolTip = value.length ? value : @"Maccy";
     } else {
@@ -2734,47 +2910,61 @@ void mz_app_set_status_text(const char *text) {
 }
 
 void mz_app_set_rows(const MZAppRow *rows, size_t count) {
-  NSMutableArray<MZRow *> *copy = [NSMutableArray arrayWithCapacity:count];
-  for (size_t i = 0; i < count; i++) {
-    MZRow *row = [MZRow new];
-    row.rowID = rows[i].id;
-    row.title = mz_string_from_utf8_or_fallback(rows[i].title, @"[text]");
-    row.subtitle = mz_string_from_utf8_or_fallback(rows[i].subtitle, @"");
-    row.app = mz_string_from_utf8_or_fallback(rows[i].app, @"");
-    row.copiedAt = rows[i].copied_at;
-    row.pinOrder = rows[i].pin_order;
-    row.contentKind = rows[i].content_kind;
-    row.pinned = rows[i].pinned != 0;
-    row.hasImage = rows[i].has_image != 0;
-    row.copyCount = rows[i].copy_count;
-    [copy addObject:row];
+  // Explicit pool: the first refresh runs before mz_app_run's pool exists, and
+  // later calls arrive from the db queue where drain timing is unspecified.
+  @autoreleasepool {
+    NSMutableArray<MZRow *> *copy = [NSMutableArray arrayWithCapacity:count];
+    for (size_t i = 0; i < count; i++) {
+      MZRow *row = [MZRow new];
+      row.rowID = rows[i].id;
+      row.title = mz_string_from_utf8_or_fallback(rows[i].title, @"[text]");
+      row.subtitle = mz_string_from_utf8_or_fallback(rows[i].subtitle, @"");
+      row.app = mz_string_from_utf8_or_fallback(rows[i].app, @"");
+      row.copiedAt = rows[i].copied_at;
+      row.pinOrder = rows[i].pin_order;
+      row.contentKind = rows[i].content_kind;
+      row.pinned = rows[i].pinned != 0;
+      row.hasImage = rows[i].has_image != 0;
+      row.copyCount = rows[i].copy_count;
+      [copy addObject:row];
+    }
+
+    mz_debug_log(@"set_rows count=%zu", count);
+
+    void (^apply)(void) = ^{
+      int64_t selectedRowID = 0;
+      MZRow *selected = [gController selectedItem];
+      if (selected != nil) selectedRowID = selected.rowID;
+
+      gController.allRows = copy;
+      [gController applyCurrentFilterPreservingSelection:selectedRowID];
+      mz_debug_log(@"set_rows applied count=%lu selected=%lld",
+                   (unsigned long)copy.count, selectedRowID);
+    };
+    // Apply inline when already on the main thread: an async hop would let a
+    // just-typed Enter act on rows the user can no longer see.
+    if (NSThread.isMainThread) {
+      apply();
+    } else {
+      dispatch_async(dispatch_get_main_queue(), apply);
+    }
   }
-
-  // Tracing this single boundary lets us tell from `/tmp/maccy-debug.log` whether
-  // a "stale panel" report is upstream (Zig never pushed) or downstream (push
-  // happened but the apply block never ran).
-  mz_debug_log(@"set_rows count=%zu", count);
-
-  dispatch_async(dispatch_get_main_queue(), ^{
-    int64_t selectedRowID = 0;
-    MZRow *selected = [gController selectedItem];
-    if (selected != nil) selectedRowID = selected.rowID;
-
-    gController.allRows = copy;
-    [gController applyCurrentFilterPreservingSelection:selectedRowID];
-    mz_debug_log(@"set_rows applied count=%lu selected=%lld",
-                 (unsigned long)copy.count, selectedRowID);
-  });
 }
 
 void mz_app_invalidate_preview_cache(void) {
   [mz_preview_cache() removeAllObjects];
 }
 
+void mz_app_beep(void) {
+  dispatch_async(dispatch_get_main_queue(), ^{ NSBeep(); });
+}
+
 void mz_app_reveal_target(const char *target) {
   if (target == NULL) return;
+  // Copy before dispatching — the Zig caller frees `target` when it returns,
+  // so reading it inside the async block was a use-after-free.
+  NSString *value = [NSString stringWithUTF8String:target];
   dispatch_async(dispatch_get_main_queue(), ^{
-    NSString *value = [NSString stringWithUTF8String:target];
     if (value.length == 0) return;
 
     NSURL *url = [NSURL URLWithString:value];

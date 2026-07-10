@@ -23,7 +23,7 @@ MaccyZig 帮你在 macOS 上找回和复用复制过的内容。
 
 预构建的 macOS 版本会发布到 GitHub [Releases](https://github.com/ChaNg1o1/Maccy-zig/releases) 页面。你也可以在仓库页面右侧的 Releases 区域直接下载。
 
-下载 `MaccyZig-*-macOS.zip`，解压后把 `Maccy.app` 移动到 `/Applications`。
+下载 `MaccyZig-*-macOS.zip`，解压后把 `MaccyZig.app` 移动到 `/Applications`。
 
 ## 你可以用它做什么
 
@@ -78,7 +78,7 @@ zig build -Doptimize=ReleaseFast
 
 ## 打包 App
 
-生成 `dist/Maccy.app`：
+生成 `dist/MaccyZig.app`：
 
 ```sh
 ./scripts/package-app.sh
@@ -87,7 +87,7 @@ zig build -Doptimize=ReleaseFast
 打包脚本会：
 
 - 以 `ReleaseFast` 构建 `maccy-zig`
-- 在 `dist/Maccy.app` 创建 App bundle
+- 在 `dist/MaccyZig.app` 创建 App bundle
 - 复制 `resources/Info.plist`
 - 生成 `AppIcon.icns`
 - 从 `assets/menubar.svg` 渲染菜单栏模板图
@@ -103,7 +103,7 @@ CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/package-app.
 
 目前还没有已签名的公开下载包。如果想现在试用，需要先从源码构建并在本地安装打包后的 App。
 
-用新打包的版本替换 `/Applications/Maccy.app`：
+用新打包的版本替换 `/Applications/MaccyZig.app`：
 
 ```sh
 ./scripts/install-replace.sh
@@ -113,7 +113,7 @@ CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/package-app.
 
 - 打包 App
 - 在可用时导入现有 Maccy 剪贴板历史
-- 备份已有的 `/Applications/Maccy.app`
+- 备份已有的 `/Applications/MaccyZig.app`
 - 备份原 Maccy SQLite 数据和偏好设置
 - 在备份目录中写入 `restore.sh`
 - 安装并打开新 App
@@ -262,7 +262,7 @@ dist/verification/
 系统设置 -> 隐私与安全性 -> 辅助功能
 ```
 
-然后添加或启用 `Maccy.app`。
+然后添加或启用 `MaccyZig.app`。
 
 ## 发布检查清单
 

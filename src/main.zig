@@ -3,6 +3,7 @@ const capture_service = @import("capture_service.zig");
 const storage = @import("storage.zig");
 const c = @cImport({
     @cInclude("sqlite3.h");
+    @cInclude("stdio.h");
     @cInclude("stdlib.h");
     @cInclude("sys/stat.h");
     @cInclude("unistd.h");
@@ -49,6 +50,8 @@ const default_types = [_][]const u8{
     "public.url-name",
     "public.utf8-plain-text",
     "public.tiff",
+    "public.jpeg",
+    "public.heic",
 };
 
 const BlobView = storage.BlobView;
@@ -214,10 +217,17 @@ fn cmdWatch(allocator: std.mem.Allocator, cfg: Config) !void {
 
     var last_change: i64 = -1;
     while (true) {
-        const result = try capture_service.captureClipboard(allocator, &db, .{
+        // A transient failure (pasteboard churn, SQLITE_BUSY from another
+        // process) must not kill the long-running watcher.
+        const result = capture_service.captureClipboard(allocator, &db, .{
             .enabled_types = cfg.enabled_types,
             .max_blob_bytes = cfg.max_blob_bytes,
-        }, &last_change);
+        }, &last_change) catch |err| {
+            std.debug.print("capture failed: {s} (retrying)\n", .{@errorName(err)});
+            if (cfg.once) return err;
+            _ = c.usleep(@intCast(cfg.interval_ms * 1000));
+            continue;
+        };
         if (result.should_prune) {
             _ = try db.prune(cfg.max_items);
         }
@@ -254,7 +264,7 @@ fn cmdWatch(allocator: std.mem.Allocator, cfg: Config) !void {
                     cfg.db_path,
                 },
             ),
-            .skipped_self_generated, .skipped_empty, .no_change => {},
+            .skipped_self_generated, .skipped_concealed, .skipped_empty, .no_change => {},
         }
 
         if (cfg.once) break;
@@ -424,6 +434,14 @@ fn cmdBench(allocator: std.mem.Allocator, cfg: Config) !void {
     std.debug.print("bench complete db={s} total_rows={d}\n", .{ cfg.db_path, row_total });
 }
 
+test "escapeLikeQuery escapes wildcards and backslashes" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("100\\%", escapeLikeQuery("100%", &buf));
+    try std.testing.expectEqualStrings("a\\_b", escapeLikeQuery("a_b", &buf));
+    try std.testing.expectEqualStrings("c:\\\\dir", escapeLikeQuery("c:\\dir", &buf));
+    try std.testing.expectEqualStrings("plain", escapeLikeQuery("plain", &buf));
+}
+
 test "hash changes with content" {
     const a = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = "a" }};
     const b = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = "b" }};
@@ -471,6 +489,37 @@ fn maybePruneByAge(db: *Db, max_age_days: i64) !i64 {
     return try db.pruneOlderThan(cutoff);
 }
 
+/// Open + migrate for the GUI. A corrupt Storage.sqlite must not make the app
+/// silently fail to launch (there is no terminal to read the error from), so
+/// the damaged file is quarantined and a fresh database is started instead.
+fn openAppDb(path: []const u8) !Db {
+    if (Db.open(path)) |opened| {
+        var db = opened;
+        if (db.migrate()) {
+            return db;
+        } else |err| {
+            std.debug.print("migrate failed: {s}; quarantining database\n", .{@errorName(err)});
+            db.close();
+        }
+    } else |err| {
+        std.debug.print("open failed: {s}; quarantining database\n", .{@errorName(err)});
+    }
+    quarantineCorruptDb(path);
+    var db = try Db.open(path);
+    try db.migrate();
+    return db;
+}
+
+fn quarantineCorruptDb(path: []const u8) void {
+    var buf: [1024]u8 = undefined;
+    const suffixes = [_][]const u8{ "", "-wal", "-shm" };
+    for (suffixes) |suffix| {
+        const src = std.fmt.bufPrintZ(buf[0..512], "{s}{s}", .{ path, suffix }) catch continue;
+        const dst = std.fmt.bufPrintZ(buf[512..], "{s}{s}.corrupt", .{ path, suffix }) catch continue;
+        _ = c.rename(src.ptr, dst.ptr);
+    }
+}
+
 fn cmdApp(allocator: std.mem.Allocator, cfg: Config) !void {
     var effective_cfg = cfg;
     if (!effective_cfg.max_items_overridden) {
@@ -479,9 +528,8 @@ fn cmdApp(allocator: std.mem.Allocator, cfg: Config) !void {
     c.mz_app_set_initial_max_items(effective_cfg.max_items);
 
     try ensureParent(effective_cfg.db_path);
-    var db = try Db.open(effective_cfg.db_path);
+    var db = try openAppDb(effective_cfg.db_path);
     defer db.close();
-    try db.migrate();
 
     // Bring storage in line with retention policy *before* the UI loads its first
     // snapshot, so cold-start visible rows already reflect any TTL/cap trimming.
@@ -541,7 +589,10 @@ fn appOnPoll() callconv(.c) void {
 
 fn appOnSearch(query: [*c]const u8) callconv(.c) void {
     const q = if (query != null) std.mem.span(query) else "";
-    const n = @min(q.len, g_app_query.len);
+    var n = @min(q.len, g_app_query.len);
+    // Never cut a multi-byte character in half at the cap — SQLite LIKE on
+    // invalid UTF-8 misbehaves.
+    while (n > 0 and !std.unicode.utf8ValidateSlice(q[0..n])) : (n -= 1) {}
     @memset(&g_app_query, 0);
     @memcpy(g_app_query[0..n], q[0..n]);
     g_app_query_len = n;
@@ -616,10 +667,10 @@ fn appPollClipboard() !void {
         .max_blob_bytes = g_app_max_blob_bytes,
     }, &g_app_last_change);
     if (result.should_prune) {
-        const removed = try db.prune(g_app_max_items);
-        // The capacity cull may have evicted rows whose ids are about to be
-        // reused on the next insert; drop their cached previews.
-        if (removed > 0) c.mz_app_invalidate_preview_cache();
+        // No preview-cache invalidation here: the capacity cull removes old
+        // rows while the just-inserted row keeps the max rowid alive, so
+        // SQLite cannot hand a deleted id to a future insert.
+        _ = try db.prune(g_app_max_items);
     }
 
     // Run TTL-based pruning at most once per AGE_PRUNE_INTERVAL_SECONDS so a long-running
@@ -632,8 +683,9 @@ fn appPollClipboard() !void {
                 std.debug.print("ttl prune failed: {s}\n", .{@errorName(err)});
                 break :blk 0;
             };
+            // Same rowid-reuse reasoning as the capacity prune above: age-based
+            // deletes only remove old rows, so cached previews stay valid.
             if (removed > 0) {
-                c.mz_app_invalidate_preview_cache();
                 try appRefreshRows();
             }
         }
@@ -646,7 +698,14 @@ fn appPollClipboard() !void {
 
 fn appWriteSelection(id: i64, plain_only: bool, paste_after: bool, target_pid: c_int) !void {
     const db = g_app_db orelse return;
-    try db.writeItemToPasteboard(id, plain_only);
+    db.writeItemToPasteboard(id, plain_only) catch |err| {
+        // The row may have been pruned since the UI snapshot, or "paste as
+        // plain text" hit an image-only item. The panel is already hidden at
+        // this point, so at least make the failure audible.
+        std.debug.print("writeItemToPasteboard failed: {s}\n", .{@errorName(err)});
+        c.mz_app_beep();
+        return err;
+    };
     const ax_trusted = c.mz_ax_is_trusted(0) != 0;
     std.debug.print(
         "appWriteSelection rowID={d} plain={any} paste_after={any} ax_trusted={any} target_pid={d}\n",
@@ -683,6 +742,19 @@ fn appRevealSelection(id: i64) !void {
     c.mz_app_reveal_target(target_z.ptr);
 }
 
+fn escapeLikeQuery(query: []const u8, buf: []u8) []const u8 {
+    var out: usize = 0;
+    for (query) |b| {
+        if (b == '%' or b == '_' or b == '\\') {
+            buf[out] = '\\';
+            out += 1;
+        }
+        buf[out] = b;
+        out += 1;
+    }
+    return buf[0..out];
+}
+
 fn appRefreshRows() !void {
     const db = g_app_db orelse return;
     const allocator = g_app_allocator orelse std.heap.page_allocator;
@@ -694,8 +766,14 @@ fn appRefreshRows() !void {
         strings.deinit(allocator);
     }
 
-    const query = g_app_query[0..g_app_query_len];
+    // Escape LIKE wildcards so searching for "100%" or "a_b" matches
+    // literally. Worst case doubles the query length.
+    var escaped_buf: [2 * g_app_query.len]u8 = undefined;
+    const query = escapeLikeQuery(g_app_query[0..g_app_query_len], &escaped_buf);
     const stmt = g_refresh_stmt orelse blk: {
+        // The row cap applies to unpinned rows only: pinned items must stay
+        // visible forever, but a plain LIMIT on recency order would push old
+        // favorites out of the window as new copies arrive.
         const sql =
             \\SELECT id,
             \\       title,
@@ -715,9 +793,11 @@ fn appRefreshRows() !void {
             \\       content_kind=?2 AS has_image,
             \\       content_kind
             \\FROM history_items
-            \\WHERE (?1 = '' OR title LIKE '%' || ?1 || '%' OR app LIKE '%' || ?1 || '%')
-            \\ORDER BY last_copied_at DESC, id DESC
-            \\LIMIT ?6;
+            \\WHERE (?1 = '' OR title LIKE '%' || ?1 || '%' ESCAPE '\' OR app LIKE '%' || ?1 || '%' ESCAPE '\')
+            \\  AND (pin IS NOT NULL OR id IN (
+            \\        SELECT id FROM history_items WHERE pin IS NULL
+            \\        ORDER BY last_copied_at DESC, id DESC LIMIT ?6))
+            \\ORDER BY last_copied_at DESC, id DESC;
         ;
         const prepared = try db.prepare(sql);
         // bind kind constants once; they never change between refreshes
@@ -731,7 +811,7 @@ fn appRefreshRows() !void {
     _ = sqlite.sqlite3_reset(stmt);
     try storage.bindText(stmt, 1, query);
     _ = sqlite.sqlite3_bind_int64(stmt, 6, g_app_max_items);
-    while (sqlite.sqlite3_step(stmt) == sqlite.SQLITE_ROW) {
+    while (try storage.stepRow(stmt)) {
         const title_txt = sqlite.sqlite3_column_text(stmt, 1) orelse @as([*c]const u8, @ptrCast(""));
         const app_txt = sqlite.sqlite3_column_text(stmt, 2) orelse @as([*c]const u8, @ptrCast(""));
         const subtitle_txt = sqlite.sqlite3_column_text(stmt, 3) orelse @as([*c]const u8, @ptrCast(""));

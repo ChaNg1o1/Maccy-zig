@@ -74,6 +74,9 @@ void mz_app_invalidate_preview_cache(void);
 /// Privacy & Security → Accessibility pane. Safe to call from any thread.
 void mz_app_show_accessibility_alert(void);
 
+/// Audible failure signal (NSBeep). Safe to call from any thread.
+void mz_app_beep(void);
+
 #ifdef __cplusplus
 }
 #endif

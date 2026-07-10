@@ -23,7 +23,20 @@ It lives in the menu bar, keeps a searchable clipboard history, and lets you qui
 
 Prebuilt macOS builds are published on the GitHub [Releases](https://github.com/ChaNg1o1/Maccy-zig/releases) page. You can also use the Releases panel on the right side of the repository page.
 
-Download `MaccyZig-*-macOS.zip`, unzip it, then move `Maccy.app` to `/Applications`.
+Download `MaccyZig-*-macOS.zip`, unzip it, then move `MaccyZig.app` to `/Applications`.
+
+Because the release build is ad-hoc signed (not notarized), macOS Gatekeeper blocks the first launch with an "Apple could not verify" dialog. To open it:
+
+1. Double-click `MaccyZig.app` (dialog appears, close it)
+2. Open **System Settings → Privacy & Security**, scroll down, click **Open Anyway**
+3. Confirm the dialog
+
+Alternative (terminal):
+```sh
+xattr -d com.apple.quarantine /Applications/MaccyZig.app
+```
+
+The default global hotkey is `⌘⇧V` (configurable from the menu).
 
 ## What You Can Do
 
@@ -78,7 +91,7 @@ zig build -Doptimize=ReleaseFast
 
 ## Package The App
 
-Create `dist/Maccy.app`:
+Create `dist/MaccyZig.app`:
 
 ```sh
 ./scripts/package-app.sh
@@ -87,7 +100,7 @@ Create `dist/Maccy.app`:
 The packaging script:
 
 - builds `maccy-zig` in `ReleaseFast`
-- creates the app bundle under `dist/Maccy.app`
+- creates the app bundle under `dist/MaccyZig.app`
 - copies `resources/Info.plist`
 - generates `AppIcon.icns`
 - renders the menu bar template image from `assets/menubar.svg`
@@ -99,36 +112,15 @@ To force a specific signing identity:
 CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/package-app.sh
 ```
 
-## Install Locally
+## Build and Install Locally
 
-There is no signed public download yet. To try the app today, build it from source and install the packaged app locally.
-
-Replace `/Applications/Maccy.app` with the newly packaged build:
+Build and install from source:
 
 ```sh
 ./scripts/install-replace.sh
 ```
 
-This script is intentionally cautious:
-
-- packages the app
-- imports existing Maccy clipboard history when available
-- backs up the existing `/Applications/Maccy.app`
-- backs up original Maccy SQLite/preferences data
-- writes a `restore.sh` script into the backup directory
-- installs and opens the new app
-
-Backups are written to:
-
-```text
-~/Backups/MaccyZig-YYYYMMDD-HHMMSS/
-```
-
-To restore the previous app after an install:
-
-```sh
-~/Backups/MaccyZig-YYYYMMDD-HHMMSS/restore.sh
-```
+This script packages the app and installs it to `/Applications/MaccyZig.app`. MaccyZig installs alongside upstream Maccy — it never modifies `/Applications/Maccy.app` or the original Maccy data.
 
 ## Developer CLI
 
@@ -262,7 +254,7 @@ If paste actions do not work, open:
 System Settings -> Privacy & Security -> Accessibility
 ```
 
-Then add or enable `Maccy.app`.
+Then add or enable `MaccyZig.app`.
 
 ## Shipping Checklist
 

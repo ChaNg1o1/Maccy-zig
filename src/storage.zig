@@ -42,14 +42,18 @@ pub const Db = struct {
 
     fn cachedSqlFor(key: CachedKey) [:0]const u8 {
         return switch (key) {
-            .update_duplicate => "UPDATE history_items SET last_copied_at=?1, copy_count=copy_count+1 WHERE hash=?2;",
+            // Re-copying the same content should also refresh the source app,
+            // otherwise the list keeps showing whichever app copied it first.
+            .update_duplicate => "UPDATE history_items SET last_copied_at=?1, copy_count=copy_count+1, app=COALESCE(NULLIF(?3,''), app) WHERE hash=?2;",
             .insert_history_item => "INSERT INTO history_items(hash,title,app,first_copied_at,last_copied_at,copy_count,content_kind) VALUES(?1,?2,?3,?4,?5,1,?6);",
             .insert_history_content => "INSERT INTO history_contents(item_id,type,value) VALUES(?1,?2,?3);",
+            // id DESC tiebreaker matches the UI ordering so same-second rows
+            // are evicted oldest-displayed-first.
             .prune_capacity =>
                 \\DELETE FROM history_items
                 \\WHERE pin IS NULL AND id IN (
                 \\  SELECT id FROM history_items WHERE pin IS NULL
-                \\  ORDER BY last_copied_at DESC LIMIT -1 OFFSET ?1
+                \\  ORDER BY last_copied_at DESC, id DESC LIMIT -1 OFFSET ?1
                 \\);
             ,
         };
@@ -59,7 +63,15 @@ pub const Db = struct {
         var db: ?*sqlite.sqlite3 = null;
         const zpath = try std.heap.page_allocator.dupeZ(u8, path);
         defer std.heap.page_allocator.free(zpath);
-        if (sqlite.sqlite3_open(zpath.ptr, &db) != sqlite.SQLITE_OK) return error.SqliteOpenFailed;
+        if (sqlite.sqlite3_open(zpath.ptr, &db) != sqlite.SQLITE_OK) {
+            // sqlite3_open allocates a handle even on failure; close it so a
+            // failed open doesn't leak.
+            if (db) |handle| _ = sqlite.sqlite3_close(handle);
+            return error.SqliteOpenFailed;
+        }
+        // Retry writes for up to 2s instead of failing with SQLITE_BUSY when
+        // another process (CLI watch mode) shares the same database file.
+        _ = sqlite.sqlite3_busy_timeout(db.?, 2000);
         return .{ .handle = db.? };
     }
 
@@ -132,7 +144,7 @@ pub const Db = struct {
 
     pub fn upsertCapture(self: *Db, blobs: []const BlobView, hash_hex: *const [64]u8, title_buf: *const [256]u8, app: []const u8, content_kind: ContentKind) !UpsertOutcome {
         const now: i64 = @intCast(c.time(null));
-        if (try self.updateDuplicate(hash_hex, now)) return .duplicate;
+        if (try self.updateDuplicate(hash_hex, now, app)) return .duplicate;
 
         try self.exec("BEGIN IMMEDIATE;");
         errdefer self.exec("ROLLBACK;") catch {};
@@ -191,10 +203,11 @@ pub const Db = struct {
         return true;
     }
 
-    fn updateDuplicate(self: *Db, hash_hex: *const [64]u8, now: i64) !bool {
+    fn updateDuplicate(self: *Db, hash_hex: *const [64]u8, now: i64, app: []const u8) !bool {
         const stmt = try self.cachedStmt(.update_duplicate);
         _ = sqlite.sqlite3_bind_int64(stmt, 1, now);
         try bindText(stmt, 2, hash_hex[0..]);
+        try bindText(stmt, 3, app);
         try stepDone(stmt);
         return sqlite.sqlite3_changes(self.handle) > 0;
     }
@@ -220,10 +233,14 @@ pub const Db = struct {
 
     pub fn clearAll(self: *Db) !void {
         try self.exec("DELETE FROM history_items;");
+        // Clearing is the one moment the user expects disk usage to drop;
+        // without this the file stays at its high-water mark forever.
+        self.exec("VACUUM;") catch {};
     }
 
     pub fn clearUnpinned(self: *Db) !void {
         try self.exec("DELETE FROM history_items WHERE pin IS NULL;");
+        self.exec("VACUUM;") catch {};
     }
 
     pub fn togglePin(self: *Db, id: i64) !bool {
@@ -261,19 +278,24 @@ pub const Db = struct {
             owned_data.deinit(allocator);
         }
         var has_url_blob = false;
+        var has_image_blob = false;
         var inferred_url: ?[]u8 = null;
         defer if (inferred_url) |url| allocator.free(url);
-        while (sqlite.sqlite3_step(stmt) == sqlite.SQLITE_ROW) {
+        while (try stepRow(stmt)) {
             const ty_raw = sqlite.sqlite3_column_text(stmt, 0) orelse continue;
             const ty = std.mem.span(ty_raw);
             if (isUrlType(ty)) has_url_blob = true;
+            if (isImageType(ty)) has_image_blob = true;
             if (plain_only and !(std.mem.eql(u8, ty, "public.utf8-plain-text") or std.mem.eql(u8, ty, "public.file-url"))) continue;
             const len_i = sqlite.sqlite3_column_bytes(stmt, 1);
             if (len_i <= 0) continue;
             const blob_ptr = sqlite.sqlite3_column_blob(stmt, 1) orelse continue;
             const len: usize = @intCast(len_i);
             const bytes = @as([*]const u8, @ptrCast(blob_ptr))[0..len];
-            if (!plain_only and inferred_url == null) {
+            // Only mine plain text for a URL. Scanning binary blobs is both a
+            // multi-MB waste and wrong: PNG/TIFF metadata nearly always embeds
+            // Adobe XMP namespace URLs, which would get pasted as the "link".
+            if (!plain_only and inferred_url == null and std.mem.eql(u8, ty, "public.utf8-plain-text")) {
                 if (extractHttpUrl(bytes)) |url| inferred_url = try allocator.dupe(u8, url);
             }
             const ty_copy = try allocator.dupeZ(u8, ty);
@@ -286,7 +308,7 @@ pub const Db = struct {
                 .len = @intCast(len_i),
             });
         }
-        if (!plain_only and !has_url_blob) {
+        if (!plain_only and !has_url_blob and !has_image_blob) {
             if (inferred_url) |url| {
                 const ty_copy = try allocator.dupeZ(u8, "public.url");
                 const data_copy = try allocator.dupe(u8, url);
@@ -304,10 +326,12 @@ pub const Db = struct {
     }
 
     pub fn readRevealTarget(self: *Db, id: i64, allocator: std.mem.Allocator) !?[]u8 {
+        // Only true URL flavors: public.url-name carries a display title, not
+        // something Finder or a browser can open.
         const stmt = try self.prepare(
             \\SELECT value
             \\FROM history_contents
-            \\WHERE item_id=?1 AND (type='public.file-url' OR type LIKE '%url%')
+            \\WHERE item_id=?1 AND type IN ('public.file-url', 'public.url')
             \\ORDER BY CASE WHEN type='public.file-url' THEN 0 ELSE 1 END, id ASC
             \\LIMIT 1;
         );
@@ -540,6 +564,16 @@ pub fn bindBlob(stmt: *sqlite.sqlite3_stmt, idx: c_int, value: []const u8) !void
 pub fn stepDone(stmt: *sqlite.sqlite3_stmt) !void {
     const rc = sqlite.sqlite3_step(stmt);
     if (rc != sqlite.SQLITE_DONE) return error.SqliteStepFailed;
+}
+
+/// Row-iteration step that distinguishes "no more rows" from an actual error,
+/// so read loops don't silently truncate on SQLITE_BUSY and friends.
+pub fn stepRow(stmt: *sqlite.sqlite3_stmt) !bool {
+    return switch (sqlite.sqlite3_step(stmt)) {
+        sqlite.SQLITE_ROW => true,
+        sqlite.SQLITE_DONE => false,
+        else => error.SqliteStepFailed,
+    };
 }
 
 fn writeBlobArrayToPasteboard(blobs: []c.MZBlob, source: []const u8) !void {
@@ -798,6 +832,32 @@ test "migrate reclassifies html-only legacy rows away from link bucket" {
         @as(i64, 2),
         try testFetchInt(&db, "PRAGMA user_version;"),
     );
+}
+
+test "duplicate capture refreshes the source app" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    try db.migrate();
+
+    const blobs = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = "hello" }};
+    const hash = [_]u8{'z'} ** 64;
+    var title: [256]u8 = [_]u8{0} ** 256;
+    @memcpy(title[0..5], "hello");
+
+    try std.testing.expectEqual(Db.UpsertOutcome.inserted, try db.upsertCapture(&blobs, &hash, &title, "com.app.first", .text));
+    try std.testing.expectEqual(Db.UpsertOutcome.duplicate, try db.upsertCapture(&blobs, &hash, &title, "com.app.second", .text));
+
+    const stmt = try db.prepare("SELECT app FROM history_items LIMIT 1;");
+    defer _ = sqlite.sqlite3_finalize(stmt);
+    try std.testing.expect(sqlite.sqlite3_step(stmt) == sqlite.SQLITE_ROW);
+    try std.testing.expectEqualStrings("com.app.second", std.mem.span(sqlite.sqlite3_column_text(stmt, 0)));
+
+    // An empty source (frontmost app unknown) must not wipe the stored app.
+    try std.testing.expectEqual(Db.UpsertOutcome.duplicate, try db.upsertCapture(&blobs, &hash, &title, "", .text));
+    const stmt2 = try db.prepare("SELECT app FROM history_items LIMIT 1;");
+    defer _ = sqlite.sqlite3_finalize(stmt2);
+    try std.testing.expect(sqlite.sqlite3_step(stmt2) == sqlite.SQLITE_ROW);
+    try std.testing.expectEqualStrings("com.app.second", std.mem.span(sqlite.sqlite3_column_text(stmt2, 0)));
 }
 
 test "readImagePreview returns first image blob" {

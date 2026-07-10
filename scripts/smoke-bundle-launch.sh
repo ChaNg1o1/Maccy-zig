@@ -6,9 +6,9 @@ cd "$(dirname "$0")/.."
 ARTIFACT_DIR="${ARTIFACT_DIR:-dist/verification}"
 mkdir -p "$ARTIFACT_DIR"
 
-APP="${APP:-${1:-dist/Maccy.app}}"
+APP="${APP:-${1:-dist/MaccyZig.app}}"
 if [ ! -d "$APP" ]; then
-  APP="$(./scripts/package-app.sh)"
+  APP="$(./scripts/package-app.sh | tail -1)"
 fi
 
 BIN="$APP/Contents/MacOS/maccy-zig"

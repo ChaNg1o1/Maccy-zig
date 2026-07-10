@@ -13,10 +13,24 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addIncludePath(b.path("src"));
-    exe.root_module.addCSourceFile(.{ .file = b.path("src/macos_clipboard.m"), .flags = &.{"-fobjc-arc"} });
-    exe.root_module.addCSourceFile(.{ .file = b.path("src/macos_paste.m"), .flags = &.{"-fobjc-arc"} });
-    exe.root_module.addCSourceFile(.{ .file = b.path("src/macos_hotkey.m"), .flags = &.{"-fobjc-arc"} });
-    exe.root_module.addCSourceFile(.{ .file = b.path("src/macos_app.m"), .flags = &.{"-fobjc-arc"} });
+    // Cross-compiling (e.g. x86_64 for the universal release binary) needs the
+    // SDK stub libraries and frameworks made explicit; native builds find them
+    // automatically. Pass --sysroot "$(xcrun --show-sdk-path)".
+    // The linker prefixes library paths with the sysroot (so pass SDK-relative)
+    // but framework/include paths are used as-is (so pass the joined path).
+    if (b.sysroot) |sysroot| {
+        exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+        exe.root_module.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "usr", "include" }) });
+        exe.root_module.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "System", "Library", "Frameworks" }) });
+    }
+    // -Wno-deprecated-declarations: when cross-compiling, SDK framework
+    // headers (Carbon) are not treated as system headers, so their own
+    // deprecation markers would otherwise fail the build.
+    const objc_flags = [_][]const u8{ "-fobjc-arc", "-Wno-deprecated-declarations" };
+    exe.root_module.addCSourceFile(.{ .file = b.path("src/macos_clipboard.m"), .flags = &objc_flags });
+    exe.root_module.addCSourceFile(.{ .file = b.path("src/macos_paste.m"), .flags = &objc_flags });
+    exe.root_module.addCSourceFile(.{ .file = b.path("src/macos_hotkey.m"), .flags = &objc_flags });
+    exe.root_module.addCSourceFile(.{ .file = b.path("src/macos_app.m"), .flags = &objc_flags });
     exe.root_module.linkFramework("Cocoa", .{});
     exe.root_module.linkFramework("QuartzCore", .{});
     exe.root_module.linkFramework("ApplicationServices", .{});

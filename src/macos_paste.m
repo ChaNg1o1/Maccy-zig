@@ -92,7 +92,10 @@ static void mz_activate_then_post_command_v(pid_t pid, NSUInteger attempt) {
   // is actually frontmost.
   [target activateWithOptions:(NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows)];
 
-  if (attempt >= 10) {
+  // ~0.8s budget: full-screen and cross-Space activations routinely take
+  // several hundred ms, and falling to CGEventPostToPid too early means many
+  // apps silently ignore the paste.
+  if (attempt >= 32) {
     NSLog(@"[MaccyZig] target pid=%d did not become frontmost after retries; using pid fallback", pid);
     mz_send_command_v_chord(pid, NO);
     return;

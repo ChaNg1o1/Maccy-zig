@@ -6,11 +6,12 @@ cd "$(dirname "$0")/.."
 ARTIFACT_DIR="${ARTIFACT_DIR:-dist/verification}"
 mkdir -p "$ARTIFACT_DIR"
 
-APP="${APP:-$(./scripts/package-app.sh)}"
+APP="${APP:-$(./scripts/package-app.sh | tail -1)}"
 BIN="$APP/Contents/MacOS/maccy-zig"
 PLIST="$APP/Contents/Info.plist"
 HELP_OUT="$ARTIFACT_DIR/bundle-help.txt"
 CODESIGN_OUT="$ARTIFACT_DIR/codesign-verify.txt"
+LIPO_OUT="$ARTIFACT_DIR/lipo-archs.txt"
 MANIFEST_OUT="$ARTIFACT_DIR/package-smoke.txt"
 
 [ -d "$APP" ]
@@ -19,12 +20,14 @@ MANIFEST_OUT="$ARTIFACT_DIR/package-smoke.txt"
 
 plutil -lint "$PLIST" >"$ARTIFACT_DIR/info-plist-lint.txt"
 codesign --verify --deep --strict "$APP" >"$CODESIGN_OUT" 2>&1
+lipo -archs "$BIN" >"$LIPO_OUT" 2>&1 || true
 "$BIN" --help >"$HELP_OUT" 2>&1
 
 {
   printf 'app=%s\n' "$APP"
   printf 'bin=%s\n' "$BIN"
   printf 'plist=%s\n' "$PLIST"
+  printf 'archs=%s\n' "$(cat "$LIPO_OUT")"
   printf 'help_output=%s\n' "$HELP_OUT"
   printf 'codesign_output=%s\n' "$CODESIGN_OUT"
   shasum -a 256 "$BIN"
