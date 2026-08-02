@@ -13,7 +13,13 @@ static dispatch_queue_t mz_db_queue(void) {
   static dispatch_queue_t queue;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
-    queue = dispatch_queue_create("io.github.chang1o1.MaccyZig.db", DISPATCH_QUEUE_SERIAL);
+    // Utility QoS keeps the idle poll tick (and capture/prune work) on
+    // E-cores instead of inheriting the main thread's user-interactive QoS
+    // through the timer's dispatch_async. User-blocking waits still get
+    // priority donation, so paste latency is unaffected.
+    dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(
+        DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0);
+    queue = dispatch_queue_create("io.github.chang1o1.MaccyZig.db", attr);
   });
   return queue;
 }
