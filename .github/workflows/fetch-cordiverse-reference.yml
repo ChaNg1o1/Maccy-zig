@@ -1,0 +1,43 @@
+name: Fetch Cordiverse reference paper
+
+on:
+  push:
+    branches:
+      - tmp/fetch-cordiverse-paper
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install PDF tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils
+
+      - name: Download and inspect reference paper
+        run: |
+          set -euo pipefail
+          mkdir -p reference/pages
+          curl -L --fail --retry 3 \
+            https://raw.githubusercontent.com/cordiverse/paper/main/paper.pdf \
+            -o reference/cordiverse-paper.pdf
+          pdfinfo reference/cordiverse-paper.pdf > reference/info.txt
+          pdftotext -layout reference/cordiverse-paper.pdf reference/paper.txt
+          pdftoppm -png -r 110 reference/cordiverse-paper.pdf reference/pages/page >/dev/null 2>&1
+          sha256sum reference/cordiverse-paper.pdf > reference/sha256.txt
+
+      - name: Upload reference bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: cordiverse-paper-reference
+          path: reference
+          if-no-files-found: error
+          retention-days: 1
