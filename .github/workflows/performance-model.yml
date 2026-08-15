@@ -57,6 +57,15 @@ jobs:
       - name: Run repository tests
         run: zig build test
 
+      - name: Print one raw benchmark sample
+        run: |
+          zig build -Doptimize=ReleaseFast
+          rm -f /tmp/maccy-pareto-diagnostic.sqlite*
+          ./zig-out/bin/maccy-zig bench \
+            --db /tmp/maccy-pareto-diagnostic.sqlite \
+            --count 3 \
+            --max-items 2
+
       - name: Collect screening measurements
         run: |
           bash scripts/benchmark-pareto.sh \
