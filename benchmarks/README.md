@@ -7,6 +7,12 @@ The benchmark directory contains the candidate design and generated-output locat
 - `reports/`: ignored Pareto JSON, CSV, and Markdown reports.
 - [`../docs/performance-pareto.md`](../docs/performance-pareto.md): mathematical model, measurement scope, protocol, and frontier-expansion roadmap.
 
+## Measurement boundary
+
+The harness directly measures the CLI storage/search workload, peak RSS of that workload, binary size, and database size. `copy_to_ready_ms` combines those measured components with an analytical polling-delay term; it is a model-derived scenario metric, not a direct GUI stopwatch measurement.
+
+The current AppKit GUI still creates a 500 ms timer with 100 ms tolerance. Candidate `poll_interval_ms` values therefore represent policy scenarios until that interval is wired into the GUI runtime and validated with signposts. Likewise, `images` and `max_blob_mib` are capability/feasibility labels in this storage benchmark; live capture, preview decode, and paste-replay memory require separate AppKit measurements.
+
 Inspect the design without building:
 
 ```sh
