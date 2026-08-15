@@ -1,0 +1,82 @@
+name: Performance model
+
+on:
+  pull_request:
+    paths:
+      - "scripts/pareto.py"
+      - "scripts/benchmark_runner.py"
+      - "scripts/benchmark-pareto.sh"
+      - "benchmarks/**"
+      - "docs/performance-pareto.md"
+      - ".github/workflows/performance-model.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/pareto.py"
+      - "scripts/benchmark_runner.py"
+      - "scripts/benchmark-pareto.sh"
+      - "benchmarks/**"
+      - "docs/performance-pareto.md"
+      - ".github/workflows/performance-model.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Pareto tooling
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run analyzer self-test
+        run: python3 scripts/pareto.py --self-test
+
+      - name: Run benchmark-runner self-test
+        run: python3 scripts/benchmark_runner.py --self-test
+
+      - name: Validate shell syntax
+        run: bash -n scripts/benchmark-pareto.sh
+
+      - name: Validate candidate-space expansion
+        run: bash scripts/benchmark-pareto.sh --list
+
+  screen-macos:
+    name: Run macOS Pareto screening
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Run repository tests
+        run: zig build test
+
+      - name: Collect screening measurements
+        run: |
+          bash scripts/benchmark-pareto.sh \
+            --runs 3 \
+            --warmups 1 \
+            --seed-count 2000 \
+            --output benchmarks/results/github-actions.jsonl \
+            --report-dir benchmarks/reports/github-actions
+
+      - name: Upload measurements and report
+        uses: actions/upload-artifact@v4
+        with:
+          name: maccy-pareto-${{ runner.arch }}-${{ github.sha }}
+          path: |
+            benchmarks/results/github-actions.jsonl
+            benchmarks/reports/github-actions
+          if-no-files-found: error
+          retention-days: 30
