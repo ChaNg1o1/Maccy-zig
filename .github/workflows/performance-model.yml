@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "scripts/pareto.py"
+      - "scripts/benchmark_runner.py"
       - "scripts/benchmark-pareto.sh"
       - "benchmarks/**"
       - "docs/performance-pareto.md"
@@ -13,6 +14,7 @@ on:
       - main
     paths:
       - "scripts/pareto.py"
+      - "scripts/benchmark_runner.py"
       - "scripts/benchmark-pareto.sh"
       - "benchmarks/**"
       - "docs/performance-pareto.md"
@@ -32,6 +34,9 @@ jobs:
 
       - name: Run analyzer self-test
         run: python3 scripts/pareto.py --self-test
+
+      - name: Run benchmark-runner self-test
+        run: python3 scripts/benchmark_runner.py --self-test
 
       - name: Validate shell syntax
         run: bash -n scripts/benchmark-pareto.sh
@@ -56,15 +61,6 @@ jobs:
 
       - name: Run repository tests
         run: zig build test
-
-      - name: Print one raw benchmark sample
-        run: |
-          zig build -Doptimize=ReleaseFast
-          rm -f /tmp/maccy-pareto-diagnostic.sqlite*
-          ./zig-out/bin/maccy-zig bench \
-            --db /tmp/maccy-pareto-diagnostic.sqlite \
-            --count 3 \
-            --max-items 2
 
       - name: Collect screening measurements
         run: |
