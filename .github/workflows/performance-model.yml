@@ -46,7 +46,7 @@ jobs:
 
   screen-macos:
     name: Run macOS Pareto screening
-    if: github.event_name != 'push'
+    if: github.event_name == 'workflow_dispatch'
     needs: validate
     runs-on: macos-latest
     timeout-minutes: 30
