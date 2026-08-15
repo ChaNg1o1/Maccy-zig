@@ -1,0 +1,39 @@
+name: Performance model
+
+on:
+  pull_request:
+    paths:
+      - "scripts/pareto.py"
+      - "scripts/benchmark-pareto.sh"
+      - "benchmarks/**"
+      - "docs/performance-pareto.md"
+      - ".github/workflows/performance-model.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/pareto.py"
+      - "scripts/benchmark-pareto.sh"
+      - "benchmarks/**"
+      - "docs/performance-pareto.md"
+      - ".github/workflows/performance-model.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Pareto tooling
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run analyzer self-test
+        run: python3 scripts/pareto.py --self-test
+
+      - name: Validate shell syntax
+        run: bash -n scripts/benchmark-pareto.sh
+
+      - name: Validate candidate-space expansion
+        run: bash scripts/benchmark-pareto.sh --list
