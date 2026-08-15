@@ -3,6 +3,10 @@
   "warmups": 2,
   "seed_count": 5000,
   "search_repetitions": 200,
+  "notes": [
+    "The default report conditions on the 500-item product mode so extra history capacity is not treated as a free equivalent feature.",
+    "Reanalyze the same JSONL with max_items==2000 for the deep-history frontier."
+  ],
   "candidates": [
     {
       "id": "fast-responsive",
@@ -114,7 +118,7 @@
     "constraints": [
       "images==true",
       "max_blob_mib>=16",
-      "max_items>=500"
+      "max_items==500"
     ],
     "weights": {
       "copy_to_ready_ms": 2.0,
