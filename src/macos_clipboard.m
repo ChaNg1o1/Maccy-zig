@@ -1,6 +1,8 @@
 #import "macos_clipboard.h"
 #import <AppKit/AppKit.h>
+#import <ApplicationServices/ApplicationServices.h>
 #import <Foundation/Foundation.h>
+#import "macos_jev.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -101,6 +103,61 @@ static int mz_append_blob(MZSnapshot *snapshot, NSString *type, NSData *data) {
   return 0;
 }
 
+static NSString *mz_clipboard_ax_string(AXUIElementRef element, CFStringRef attribute) {
+  CFTypeRef value = NULL;
+  if (AXUIElementCopyAttributeValue(element, attribute, &value) != kAXErrorSuccess || value == NULL) return nil;
+  NSString *result = nil;
+  if (CFGetTypeID(value) == CFStringGetTypeID()) result = [(__bridge NSString *)value copy];
+  CFRelease(value);
+  return result.length > 0 ? result : nil;
+}
+
+// Half of what a person means by "the thing I want to paste" is where they got
+// it: "the address from that email", not "a string shaped like an address".
+// The copy is the one moment that is knowable, and it has no latency budget --
+// this runs on the capture path, never while the panel is waiting.
+static NSString *mz_clipboard_source_context(NSRunningApplication *app) {
+  if (app == nil || !mz_jev_enabled() || !AXIsProcessTrusted()) return nil;
+  AXUIElementRef ax_app = AXUIElementCreateApplication(app.processIdentifier);
+  if (ax_app == NULL) return nil;
+  // A hung source app must not stall history capture.
+  AXUIElementSetMessagingTimeout(ax_app, 0.25f);
+
+  NSString *context = nil;
+  CFTypeRef window = NULL;
+  if (AXUIElementCopyAttributeValue(ax_app, kAXFocusedWindowAttribute, &window) == kAXErrorSuccess && window != NULL) {
+    NSString *title = mz_clipboard_ax_string((AXUIElementRef)window, kAXTitleAttribute);
+    NSString *document = mz_clipboard_ax_string((AXUIElementRef)window, kAXDocumentAttribute);
+    // A file URL's useful part is the file name; a web URL's is host + path.
+    // The query and fragment go: they are tracking noise at best and a session
+    // token at worst, and neither says what the page *is*.
+    if ([document hasPrefix:@"file://"]) {
+      document = document.lastPathComponent.stringByRemovingPercentEncoding;
+    } else if (document != nil) {
+      NSURLComponents *parts = [NSURLComponents componentsWithString:document];
+      if (parts.host.length > 0) {
+        NSString *path = parts.path.length > 1 ? parts.path : @"";
+        document = [parts.host stringByAppendingString:path];
+      }
+    }
+    // Separate budgets, so a long title cannot squeeze the address out.
+    if (title.length > 90) title = [[title substringToIndex:90] stringByAppendingString:@"…"];
+    if (document.length > 70) document = [[document substringToIndex:70] stringByAppendingString:@"…"];
+    if (title != nil && document != nil && ![title containsString:document]) {
+      context = [NSString stringWithFormat:@"%@ (%@)", title, document];
+    } else {
+      context = title ?: document;
+    }
+    CFRelease(window);
+  }
+  CFRelease(ax_app);
+
+  // A window title can carry an account number or a token in a URL; the same
+  // rule that keeps credentials out of candidates applies to their labels.
+  if (context != nil && mz_jev_looks_like_secret(context)) return nil;
+  return context;
+}
+
 static int mz_clipboard_snapshot_once(MZSnapshot *out,
                                       NSSet<NSString *> *enabled,
                                       size_t max_blob_bytes) {
@@ -111,6 +168,7 @@ static int mz_clipboard_snapshot_once(MZSnapshot *out,
 
   NSRunningApplication *frontmost = [[NSWorkspace sharedWorkspace] frontmostApplication];
   out->source_bundle = mz_strdup_ns([frontmost bundleIdentifier]);
+  out->source_context = mz_strdup_ns(mz_clipboard_source_context(frontmost));
 
   NSArray<NSPasteboardItem *> *items = [pasteboard pasteboardItems];
 
@@ -206,6 +264,7 @@ int64_t mz_clipboard_change_count(void) {
 void mz_clipboard_snapshot_free(MZSnapshot *snapshot) {
   if (snapshot == NULL) return;
   if (snapshot->source_bundle != NULL) free(snapshot->source_bundle);
+  if (snapshot->source_context != NULL) free(snapshot->source_context);
   for (size_t i = 0; i < snapshot->count; i++) {
     if (snapshot->blobs[i].type != NULL) free(snapshot->blobs[i].type);
     if (snapshot->blobs[i].data != NULL) free(snapshot->blobs[i].data);

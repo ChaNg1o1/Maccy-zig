@@ -135,12 +135,44 @@ pub const Db = struct {
             \\  type TEXT NOT NULL,
             \\  value BLOB NOT NULL
             \\);
+            // What the user actually pasted, and where. Jev supplies the
+            // semantics; this table is the part that remembers, so a snippet
+            // this user keeps pasting into one app stops being a guess.
+            \\CREATE TABLE IF NOT EXISTS paste_events (
+            \\  id INTEGER PRIMARY KEY,
+            \\  item_id INTEGER NOT NULL REFERENCES history_items(id) ON DELETE CASCADE,
+            \\  dest_bundle_id TEXT NOT NULL,
+            \\  pasted_at INTEGER NOT NULL,
+            \\  was_suggested INTEGER NOT NULL DEFAULT 0
+            \\);
+            \\CREATE INDEX IF NOT EXISTS idx_paste_events_dest ON paste_events(dest_bundle_id, item_id);
+            // One row per paste made while Jev was on: the ingredients of the
+            // question plus what the user actually chose. Self-contained on
+            // purpose (no foreign key), so pruning history does not erase the
+            // evidence needed to evaluate a new prompt against old situations.
+            \\CREATE TABLE IF NOT EXISTS jev_samples (
+            \\  id INTEGER PRIMARY KEY,
+            \\  created_at INTEGER NOT NULL,
+            \\  dest_bundle_id TEXT NOT NULL,
+            \\  chosen_item_id INTEGER NOT NULL,
+            \\  chosen_rank INTEGER NOT NULL,
+            \\  suggested_item_id INTEGER NOT NULL DEFAULT 0,
+            \\  sample_json TEXT NOT NULL
+            \\);
             \\CREATE INDEX IF NOT EXISTS idx_history_items_last ON history_items(last_copied_at DESC);
             \\CREATE INDEX IF NOT EXISTS idx_history_contents_item ON history_contents(item_id);
             \\CREATE INDEX IF NOT EXISTS idx_history_items_list ON history_items(last_copied_at DESC, id DESC, title, app, copy_count);
         );
         try self.ensureHistoryItemsContentKind();
         try self.ensureHistoryItemsPinOrder();
+        // Where an entry was copied from (window title, page or file), and
+        // which list position each paste came from. Both are additive.
+        if (!(try self.tableHasColumn("history_items", "source_context"))) {
+            try self.exec("ALTER TABLE history_items ADD COLUMN source_context TEXT;");
+        }
+        if (!(try self.tableHasColumn("paste_events", "row_rank"))) {
+            try self.exec("ALTER TABLE paste_events ADD COLUMN row_rank INTEGER NOT NULL DEFAULT -1;");
+        }
     }
 
     pub fn exec(self: *Db, sql: [:0]const u8) !void {
@@ -242,6 +274,8 @@ pub const Db = struct {
 
     pub fn clearAll(self: *Db) !void {
         try self.exec("DELETE FROM history_items;");
+        // Samples quote entry previews; "clear everything" has to mean it.
+        try self.exec("DELETE FROM jev_samples;");
         // Clearing is the one moment the user expects disk usage to drop;
         // without this the file stays at its high-water mark forever.
         self.exec("VACUUM;") catch {};
@@ -249,6 +283,9 @@ pub const Db = struct {
 
     pub fn clearUnpinned(self: *Db) !void {
         try self.exec("DELETE FROM history_items WHERE pin IS NULL;");
+        // A sample mixes pinned and unpinned previews and cannot be split, so
+        // it goes too rather than outliving the entries it quotes.
+        try self.exec("DELETE FROM jev_samples;");
         self.exec("VACUUM;") catch {};
     }
 
@@ -267,6 +304,119 @@ pub const Db = struct {
         _ = sqlite.sqlite3_bind_int64(stmt, 2, id);
         try stepDone(stmt);
         return sqlite.sqlite3_changes(self.handle) > 0;
+    }
+
+    /// Log one paste. `was_suggested` records whether Jev had put this row
+    /// forward, so the log also shows how often the user overrode it;
+    /// `row_rank` is the row's position in the list at that moment (-1 when
+    /// unknown), which is what tells us how often "the most recent entry" is
+    /// really what a person opening the panel wants.
+    pub fn recordPaste(self: *Db, id: i64, dest_bundle_id: []const u8, was_suggested: bool, row_rank: i32) !void {
+        if (dest_bundle_id.len == 0) return;
+        const stmt = try self.prepare(
+            \\INSERT INTO paste_events (item_id, dest_bundle_id, pasted_at, was_suggested, row_rank)
+            \\SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM history_items WHERE id=?1);
+        );
+        defer _ = sqlite.sqlite3_finalize(stmt);
+        _ = sqlite.sqlite3_bind_int64(stmt, 1, id);
+        try bindText(stmt, 2, dest_bundle_id);
+        _ = sqlite.sqlite3_bind_int64(stmt, 3, @as(i64, @intCast(c.time(null))));
+        _ = sqlite.sqlite3_bind_int(stmt, 4, if (was_suggested) 1 else 0);
+        _ = sqlite.sqlite3_bind_int(stmt, 5, row_rank);
+        try stepDone(stmt);
+    }
+
+    pub const PasteSignals = extern struct {
+        /// Lifetime pastes of this entry into the destination app.
+        pastes_into_destination: i32 = 0,
+        /// 1 when this entry itself went into the destination moments ago.
+        pasted_here_recently: i32 = 0,
+        /// 1 when an entry copied alongside this one (same source app, within
+        /// `burst_window_s`) went into the destination moments ago -- the
+        /// "copied three things, now filling three fields" pattern.
+        sibling_pasted_here_recently: i32 = 0,
+    };
+
+    /// How close together two copies must be to count as one gathering trip.
+    pub const burst_window_s: i64 = 90;
+    /// How long a paste keeps counting as "moments ago".
+    pub const recent_paste_window_s: i64 = 120;
+
+    /// Sequence facts for each of `ids` relative to `dest_bundle_id`, written
+    /// to `out` in the same order. `now` is a parameter so tests can pin it.
+    pub fn pasteSignalsForApp(self: *Db, dest_bundle_id: []const u8, ids: []const i64, now: i64, out: []PasteSignals) !void {
+        for (out) |*o| o.* = .{};
+        if (dest_bundle_id.len == 0 or ids.len == 0) return;
+        const stmt = try self.prepare(
+            \\SELECT
+            \\  (SELECT COUNT(*) FROM paste_events WHERE dest_bundle_id=?1 AND item_id=?2),
+            \\  EXISTS (SELECT 1 FROM paste_events
+            \\          WHERE dest_bundle_id=?1 AND item_id=?2 AND pasted_at >= ?3),
+            \\  EXISTS (SELECT 1
+            \\          FROM history_items me
+            \\          JOIN history_items sib
+            \\            ON sib.id != me.id
+            \\           AND COALESCE(sib.app, '') = COALESCE(me.app, '')
+            \\           AND ABS(sib.last_copied_at - me.last_copied_at) <= ?4
+            \\          JOIN paste_events pe
+            \\            ON pe.item_id = sib.id AND pe.dest_bundle_id = ?1 AND pe.pasted_at >= ?3
+            \\          WHERE me.id = ?2);
+        );
+        defer _ = sqlite.sqlite3_finalize(stmt);
+        for (ids, 0..) |id, i| {
+            if (i >= out.len) break;
+            _ = sqlite.sqlite3_reset(stmt);
+            _ = sqlite.sqlite3_clear_bindings(stmt);
+            try bindText(stmt, 1, dest_bundle_id);
+            _ = sqlite.sqlite3_bind_int64(stmt, 2, id);
+            _ = sqlite.sqlite3_bind_int64(stmt, 3, now - recent_paste_window_s);
+            _ = sqlite.sqlite3_bind_int64(stmt, 4, burst_window_s);
+            if (try stepRow(stmt)) {
+                out[i] = .{
+                    .pastes_into_destination = sqlite.sqlite3_column_int(stmt, 0),
+                    .pasted_here_recently = sqlite.sqlite3_column_int(stmt, 1),
+                    .sibling_pasted_here_recently = sqlite.sqlite3_column_int(stmt, 2),
+                };
+            }
+        }
+    }
+
+    /// Keep this many evaluation samples; older ones fall off on insert.
+    pub const max_jev_samples: i64 = 2000;
+
+    pub fn recordJevSample(self: *Db, dest_bundle_id: []const u8, chosen_item_id: i64, chosen_rank: i32, suggested_item_id: i64, sample_json: []const u8) !void {
+        if (sample_json.len == 0) return;
+        const stmt = try self.prepare(
+            \\INSERT INTO jev_samples (created_at, dest_bundle_id, chosen_item_id, chosen_rank, suggested_item_id, sample_json)
+            \\VALUES (?1, ?2, ?3, ?4, ?5, ?6);
+        );
+        defer _ = sqlite.sqlite3_finalize(stmt);
+        _ = sqlite.sqlite3_bind_int64(stmt, 1, @as(i64, @intCast(c.time(null))));
+        try bindText(stmt, 2, dest_bundle_id);
+        _ = sqlite.sqlite3_bind_int64(stmt, 3, chosen_item_id);
+        _ = sqlite.sqlite3_bind_int(stmt, 4, chosen_rank);
+        _ = sqlite.sqlite3_bind_int64(stmt, 5, suggested_item_id);
+        try bindText(stmt, 6, sample_json);
+        try stepDone(stmt);
+
+        const trim = try self.prepare(
+            \\DELETE FROM jev_samples WHERE id <= (SELECT MAX(id) FROM jev_samples) - ?1;
+        );
+        defer _ = sqlite.sqlite3_finalize(trim);
+        _ = sqlite.sqlite3_bind_int64(trim, 1, max_jev_samples);
+        try stepDone(trim);
+    }
+
+    /// Remember where an entry was copied from. Separate from upsertCapture so
+    /// a re-copy from somewhere new refreshes it, and so the hot insert path
+    /// keeps its cached statement unchanged.
+    pub fn setSourceContext(self: *Db, hash_hex: *const [64]u8, context: []const u8) !void {
+        if (context.len == 0) return;
+        const stmt = try self.prepare("UPDATE history_items SET source_context=?2 WHERE hash=?1;");
+        defer _ = sqlite.sqlite3_finalize(stmt);
+        try bindText(stmt, 1, hash_hex[0..]);
+        try bindText(stmt, 2, context);
+        try stepDone(stmt);
     }
 
     pub fn writeItemToPasteboard(self: *Db, id: i64, plain_only: bool) !void {
@@ -649,6 +799,149 @@ test "togglePin stores stable marker and null" {
     try std.testing.expect(try db.togglePin(item_id));
     try std.testing.expectEqual(@as(?[]u8, null), try testFetchPin(&db, item_id, std.testing.allocator));
     try std.testing.expectEqual(@as(?i64, null), try testFetchPinOrder(&db, item_id));
+}
+
+test "paste log counts per destination app and ignores unknown rows" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    try db.migrate();
+
+    const blobs = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = "hello" }};
+    const hash_a = [_]u8{'a'} ** 64;
+    const hash_b = [_]u8{'b'} ** 64;
+    try std.testing.expect(try db.insertImported(&blobs, &hash_a, "a", "app", "", 1, 1, 1, .text));
+    const id_a = sqlite.sqlite3_last_insert_rowid(db.handle);
+    try std.testing.expect(try db.insertImported(&blobs, &hash_b, "b", "app", "", 1, 1, 1, .text));
+    const id_b = sqlite.sqlite3_last_insert_rowid(db.handle);
+
+    try db.recordPaste(id_a, "com.apple.Terminal", true, 0);
+    try db.recordPaste(id_a, "com.apple.Terminal", false, 3);
+    try db.recordPaste(id_a, "com.google.Chrome", false, 1);
+    try db.recordPaste(id_b, "com.apple.Terminal", false, 2);
+    // A row that no longer exists must not create an orphan event.
+    try db.recordPaste(9999, "com.apple.Terminal", false, 0);
+    // An unknown destination is not a destination.
+    try db.recordPaste(id_a, "", false, 0);
+
+    const now: i64 = @intCast(c.time(null));
+    var signals: [2]Db.PasteSignals = undefined;
+    try db.pasteSignalsForApp("com.apple.Terminal", &.{ id_a, id_b }, now, &signals);
+    try std.testing.expectEqual(@as(i32, 2), signals[0].pastes_into_destination);
+    try std.testing.expectEqual(@as(i32, 1), signals[1].pastes_into_destination);
+
+    try db.pasteSignalsForApp("com.google.Chrome", &.{ id_a, id_b }, now, &signals);
+    try std.testing.expectEqual(@as(i32, 1), signals[0].pastes_into_destination);
+    try std.testing.expectEqual(@as(i32, 0), signals[1].pastes_into_destination);
+
+    // Never-pasted-here and unknown-app both mean zero, not stale values.
+    try db.pasteSignalsForApp("com.unknown.App", &.{ id_a, id_b }, now, &signals);
+    try std.testing.expectEqual(@as(i32, 0), signals[0].pastes_into_destination);
+    try db.pasteSignalsForApp("", &.{ id_a, id_b }, now, &signals);
+    try std.testing.expectEqual(@as(i32, 0), signals[0].pastes_into_destination);
+
+    try std.testing.expectEqual(@as(i64, 4), try testFetchInt(&db, "SELECT COUNT(*) FROM paste_events;"));
+    try std.testing.expectEqual(@as(i64, 1), try testFetchInt(&db, "SELECT COUNT(*) FROM paste_events WHERE was_suggested = 1;"));
+    try std.testing.expectEqual(@as(i64, 3), try testFetchInt(&db, "SELECT MAX(row_rank) FROM paste_events;"));
+}
+
+test "paste signals see a copy burst and forget it after the recent window" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    try db.migrate();
+
+    const blobs = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = "x" }};
+    const now: i64 = @intCast(c.time(null));
+    // name + email + phone gathered from one app within a minute...
+    const hash_name = [_]u8{'1'} ** 64;
+    const hash_mail = [_]u8{'2'} ** 64;
+    const hash_phone = [_]u8{'3'} ** 64;
+    // ...and an unrelated entry from another app, and an old one from the same app.
+    const hash_other = [_]u8{'4'} ** 64;
+    const hash_old = [_]u8{'5'} ** 64;
+    try std.testing.expect(try db.insertImported(&blobs, &hash_name, "name", "com.crm", "", now - 60, now - 60, 1, .text));
+    const id_name = sqlite.sqlite3_last_insert_rowid(db.handle);
+    try std.testing.expect(try db.insertImported(&blobs, &hash_mail, "mail", "com.crm", "", now - 40, now - 40, 1, .text));
+    const id_mail = sqlite.sqlite3_last_insert_rowid(db.handle);
+    try std.testing.expect(try db.insertImported(&blobs, &hash_phone, "phone", "com.crm", "", now - 20, now - 20, 1, .text));
+    const id_phone = sqlite.sqlite3_last_insert_rowid(db.handle);
+    try std.testing.expect(try db.insertImported(&blobs, &hash_other, "other", "com.notes", "", now - 30, now - 30, 1, .text));
+    const id_other = sqlite.sqlite3_last_insert_rowid(db.handle);
+    try std.testing.expect(try db.insertImported(&blobs, &hash_old, "old", "com.crm", "", now - 4000, now - 4000, 1, .text));
+    const id_old = sqlite.sqlite3_last_insert_rowid(db.handle);
+
+    // The user has just pasted the name into the form.
+    try db.recordPaste(id_name, "com.form", false, 2);
+
+    var signals: [5]Db.PasteSignals = undefined;
+    const ids = [_]i64{ id_name, id_mail, id_phone, id_other, id_old };
+    try db.pasteSignalsForApp("com.form", &ids, now, &signals);
+    // The pasted entry knows it was just used; it is not its own sibling.
+    try std.testing.expectEqual(@as(i32, 1), signals[0].pasted_here_recently);
+    try std.testing.expectEqual(@as(i32, 0), signals[0].sibling_pasted_here_recently);
+    // Its burst-mates are flagged as "gathered with what was just pasted".
+    try std.testing.expectEqual(@as(i32, 1), signals[1].sibling_pasted_here_recently);
+    try std.testing.expectEqual(@as(i32, 1), signals[2].sibling_pasted_here_recently);
+    try std.testing.expectEqual(@as(i32, 0), signals[1].pasted_here_recently);
+    // Another app's entry, and a same-app entry from an hour ago, are not.
+    try std.testing.expectEqual(@as(i32, 0), signals[3].sibling_pasted_here_recently);
+    try std.testing.expectEqual(@as(i32, 0), signals[4].sibling_pasted_here_recently);
+
+    // Same question asked long after the paste: the burst no longer matters.
+    try db.pasteSignalsForApp("com.form", &ids, now + Db.recent_paste_window_s + 60, &signals);
+    try std.testing.expectEqual(@as(i32, 0), signals[0].pasted_here_recently);
+    try std.testing.expectEqual(@as(i32, 0), signals[1].sibling_pasted_here_recently);
+    try std.testing.expectEqual(@as(i32, 1), signals[0].pastes_into_destination);
+}
+
+test "jev samples are capped, and clearing history clears them" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    try db.migrate();
+
+    try db.recordJevSample("com.form", 7, 2, 7, "{\"destination\":{}}");
+    try db.recordJevSample("com.form", 9, 0, 0, "{\"destination\":{}}");
+    // An empty sample is not a sample.
+    try db.recordJevSample("com.form", 9, 0, 0, "");
+    try std.testing.expectEqual(@as(i64, 2), try testFetchInt(&db, "SELECT COUNT(*) FROM jev_samples;"));
+    try std.testing.expectEqual(@as(i64, 1), try testFetchInt(&db, "SELECT COUNT(*) FROM jev_samples WHERE suggested_item_id = chosen_item_id;"));
+
+    try db.clearUnpinned();
+    try std.testing.expectEqual(@as(i64, 0), try testFetchInt(&db, "SELECT COUNT(*) FROM jev_samples;"));
+    try db.recordJevSample("com.form", 7, 2, 7, "{}");
+    try db.clearAll();
+    try std.testing.expectEqual(@as(i64, 0), try testFetchInt(&db, "SELECT COUNT(*) FROM jev_samples;"));
+}
+
+test "source context is stored and refreshed on re-copy" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    try db.migrate();
+
+    const blobs = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = "hello" }};
+    const hash = [_]u8{'d'} ** 64;
+    try std.testing.expect(try db.insertImported(&blobs, &hash, "t", "app", "", 1, 1, 1, .text));
+    try db.setSourceContext(&hash, "Contact - Zhang San");
+    try std.testing.expectEqual(@as(i64, 1), try testFetchInt(&db, "SELECT COUNT(*) FROM history_items WHERE source_context = 'Contact - Zhang San';"));
+    try db.setSourceContext(&hash, "Inbox");
+    try std.testing.expectEqual(@as(i64, 1), try testFetchInt(&db, "SELECT COUNT(*) FROM history_items WHERE source_context = 'Inbox';"));
+    // Empty context never erases what is known.
+    try db.setSourceContext(&hash, "");
+    try std.testing.expectEqual(@as(i64, 1), try testFetchInt(&db, "SELECT COUNT(*) FROM history_items WHERE source_context = 'Inbox';"));
+}
+
+test "clearing history removes its paste log" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    try db.migrate();
+
+    const blobs = [_]BlobView{.{ .ty = "public.utf8-plain-text", .data = "hello" }};
+    const hash = [_]u8{'c'} ** 64;
+    try std.testing.expect(try db.insertImported(&blobs, &hash, "a", "app", "", 1, 1, 1, .text));
+    const id = sqlite.sqlite3_last_insert_rowid(db.handle);
+    try db.recordPaste(id, "com.apple.Terminal", false, 0);
+
+    try db.clearAll();
+    try std.testing.expectEqual(@as(i64, 0), try testFetchInt(&db, "SELECT COUNT(*) FROM paste_events;"));
 }
 
 test "togglePin returns false for missing row" {

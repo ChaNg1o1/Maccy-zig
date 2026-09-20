@@ -71,6 +71,29 @@ pub fn main(init: std.process.Init) !void {
         try cmdApp(std.heap.c_allocator, cfg);
         return;
     }
+    if (std.mem.eql(u8, args[1], "ocr-check")) {
+        // Times the screen-reading fallback: model load, then per-capture cost.
+        if (mz_ocr_self_check() != 0) return error.OcrCheckFailed;
+        return;
+    }
+    if (std.mem.eql(u8, args[1], "ui-self-check")) {
+        // Can every control in the app's windows be reached by a click?
+        if (mz_app_ui_self_check() != 0) return error.UiSelfCheckFailed;
+        return;
+    }
+    if (std.mem.eql(u8, args[1], "jev-context")) {
+        // What Jev would be told about the focused field, after a short delay
+        // to click into the app being asked about.
+        if (mz_jev_print_context(3) != 0) return error.JevContextFailed;
+        return;
+    }
+    if (std.mem.eql(u8, args[1], "jev-self-check")) {
+        // Offline check of the Jev redaction / framing / confidence logic.
+        // Declared here rather than via @cImport because macos_jev.h pulls in
+        // Foundation, which translate-c cannot chew through.
+        if (mz_jev_self_check() != 0) return error.JevSelfCheckFailed;
+        return;
+    }
     if (std.mem.eql(u8, args[1], "help") or std.mem.eql(u8, args[1], "--help")) {
         usage();
         return;
@@ -93,6 +116,8 @@ pub fn main(init: std.process.Init) !void {
         try cmdStats(cfg.db_path);
     } else if (std.mem.eql(u8, cmd, "list")) {
         try cmdList(cfg.db_path);
+    } else if (std.mem.eql(u8, cmd, "jev-eval")) {
+        try cmdJevEval(cfg.db_path, g_eval_limit);
     } else if (std.mem.eql(u8, cmd, "bench")) {
         try cmdBench(arena, cfg);
     } else {
@@ -100,6 +125,166 @@ pub fn main(init: std.process.Init) !void {
         usage();
     }
 }
+
+extern fn mz_jev_self_check() c_int;
+extern fn mz_jev_print_context(delay_seconds: c_int) c_int;
+
+/// Mirrors MZJevEvalResult in macos_jev.h (not @cImport-able: it pulls in
+/// Foundation).
+const JevEvalResult = extern struct {
+    choice_row: i64 = 0,
+    accepted: c_int = 0,
+    probability: f64 = 0,
+    default_fits: f64 = -1,
+    chosen_present: c_int = 0,
+    input_tokens: c_int = 0,
+};
+extern fn mz_jev_eval_sample(sample_json: [*:0]const u8, chosen_row: i64, out: *JevEvalResult) c_int;
+
+/// Most recent samples to replay. Each one is a billed request.
+var g_eval_limit: usize = 50;
+
+/// `maccy-zig jev-eval`: every paste made while Jev was on left behind the
+/// question's ingredients and the answer the user gave by pasting. Replaying
+/// them through the current request builder and acceptance rule turns "did
+/// that change help?" from a feeling into a number.
+fn cmdJevEval(db_path: []const u8, limit: usize) !void {
+    var db = try Db.open(db_path);
+    defer db.close();
+    try db.migrate();
+
+    // --- Free: how often is the newest entry what a panel-opener wants? ---
+    const ranked = try evalFetchInt(&db, "SELECT COUNT(*) FROM paste_events WHERE row_rank >= 0;");
+    std.debug.print("paste log: {d} paste(s) with a known list position\n", .{ranked});
+    if (ranked > 0) {
+        const top = try evalFetchInt(&db, "SELECT COUNT(*) FROM paste_events WHERE row_rank = 0;");
+        const near = try evalFetchInt(&db, "SELECT COUNT(*) FROM paste_events WHERE row_rank BETWEEN 1 AND 2;");
+        const deep = ranked - top - near;
+        std.debug.print("  newest entry (row 0): {d:.0}%   rows 1-2: {d:.0}%   deeper: {d:.0}%\n", .{
+            pct(top, ranked), pct(near, ranked), pct(deep, ranked),
+        });
+        std.debug.print("  (row 0 is what a suggestion has to beat: it is already selected for free)\n", .{});
+    }
+
+    const total = try evalFetchInt(&db, "SELECT COUNT(*) FROM jev_samples;");
+    std.debug.print("\nsamples: {d} recorded", .{total});
+    if (total == 0) {
+        std.debug.print("\n  none yet -- they accumulate as you paste from the panel with Jev on.\n", .{});
+        return;
+    }
+    std.debug.print(", replaying the latest {d} (one request each)\n\n", .{@min(limit, @as(usize, @intCast(total)))});
+
+    const stmt = try db.prepare(
+        \\SELECT id, dest_bundle_id, chosen_item_id, chosen_rank, suggested_item_id, sample_json
+        \\FROM jev_samples ORDER BY id DESC LIMIT ?1;
+    );
+    defer _ = sqlite.sqlite3_finalize(stmt);
+    _ = sqlite.sqlite3_bind_int64(stmt, 1, @intCast(limit));
+
+    var replayed: i64 = 0;
+    var present: i64 = 0;
+    var top1: i64 = 0;
+    var accepted: i64 = 0;
+    var accepted_right: i64 = 0;
+    var shown_live: i64 = 0;
+    var ends_right: i64 = 0;
+    var tokens: i64 = 0;
+    var fits_when_default_sum: f64 = 0;
+    var fits_when_default_n: i64 = 0;
+    var fits_when_other_sum: f64 = 0;
+    var fits_when_other_n: i64 = 0;
+
+    while (try storage.stepRow(stmt)) {
+        const sample_id = sqlite.sqlite3_column_int64(stmt, 0);
+        const dest = sqlite.sqlite3_column_text(stmt, 1) orelse @as([*c]const u8, @ptrCast(""));
+        const chosen = sqlite.sqlite3_column_int64(stmt, 2);
+        const chosen_rank = sqlite.sqlite3_column_int(stmt, 3);
+        const suggested = sqlite.sqlite3_column_int64(stmt, 4);
+        const json = sqlite.sqlite3_column_text(stmt, 5) orelse continue;
+
+        var result: JevEvalResult = .{};
+        const rc = mz_jev_eval_sample(@ptrCast(json), chosen, &result);
+        if (rc != 0) {
+            const why = switch (rc) {
+                3 => "no API key readable by this binary (run the one inside MaccyZig.app)",
+                5 => "request failed",
+                else => "unreadable sample",
+            };
+            std.debug.print("  #{d}: skipped, {s}\n", .{ sample_id, why });
+            if (rc == 3) return;
+            continue;
+        }
+        replayed += 1;
+        tokens += result.input_tokens;
+        if (suggested != 0) shown_live += 1;
+        if (result.chosen_present != 0) present += 1;
+        const right = result.choice_row == chosen;
+        if (right and result.chosen_present != 0) top1 += 1;
+        if (result.accepted != 0) {
+            accepted += 1;
+            if (right) accepted_right += 1;
+        }
+        if (result.default_fits >= 0) {
+            if (chosen_rank == 0) {
+                fits_when_default_sum += result.default_fits;
+                fits_when_default_n += 1;
+            } else {
+                fits_when_other_sum += result.default_fits;
+                fits_when_other_n += 1;
+            }
+        }
+        // What the user experiences is the row the panel ends up on: a quiet
+        // Jev leaves the newest entry selected, which is right whenever the
+        // newest entry is what they pasted.
+        const lands_right = if (result.accepted != 0) right else chosen_rank == 0;
+        if (lands_right) ends_right += 1;
+        const verdict: []const u8 = if (result.accepted != 0)
+            (if (!right) "moved, WRONG" else if (chosen_rank == 0) "confirmed default, RIGHT" else "moved, RIGHT")
+        else
+            (if (chosen_rank == 0) "quiet, default was right" else "quiet, missed");
+        // Unsigned for display: Zig prints an explicit '+' on padded signed ints.
+        std.debug.print("  #{d:<5} {s:<28} pasted row {d} (rank {d})  jev row {d} p={d:.2}  {s}\n", .{
+            @as(u64, @intCast(sample_id)), std.mem.span(dest), chosen, chosen_rank, result.choice_row, result.probability, verdict,
+        });
+    }
+    if (replayed == 0) return;
+
+    std.debug.print("\nsummary over {d} replayed sample(s)\n", .{replayed});
+    std.debug.print("  panel ends on the row that was pasted   {d}/{d}  ({d:.0}%)   <- the number that matters\n", .{ ends_right, replayed, pct(ends_right, replayed) });
+    std.debug.print("  wanted entry was among the candidates   {d}/{d}\n", .{ present, replayed });
+    std.debug.print("  Jev's first choice = what was pasted    {d}/{d}  ({d:.0}%)\n", .{ top1, present, pct(top1, present) });
+    std.debug.print("  suggestions that pass the accept rule   {d}/{d}  ({d:.0}% coverage)\n", .{ accepted, replayed, pct(accepted, replayed) });
+    std.debug.print("  ...of which right                       {d}/{d}  ({d:.0}% precision)\n", .{ accepted_right, accepted, pct(accepted_right, accepted) });
+    std.debug.print("  ...of which WRONG (selection yanked)    {d}\n", .{accepted - accepted_right});
+    if (fits_when_default_n > 0 or fits_when_other_n > 0) {
+        std.debug.print("  shadow default_fits: mean {d:.2} when row 0 was pasted (n={d}), {d:.2} when another row was (n={d})\n", .{
+            mean(fits_when_default_sum, fits_when_default_n), fits_when_default_n,
+            mean(fits_when_other_sum, fits_when_other_n),     fits_when_other_n,
+        });
+        std.debug.print("    (worth wiring in as a brake only if these two numbers sit clearly apart)\n", .{});
+    }
+    std.debug.print("  a live suggestion was on screen for {d}/{d}: agreement there is inflated by anchoring\n", .{ shown_live, replayed });
+    std.debug.print("  input tokens per request: {d}\n", .{@divTrunc(tokens, replayed)});
+}
+
+fn evalFetchInt(db: *Db, sql: [:0]const u8) !i64 {
+    const stmt = try db.prepare(sql);
+    defer _ = sqlite.sqlite3_finalize(stmt);
+    if (!(try storage.stepRow(stmt))) return 0;
+    return sqlite.sqlite3_column_int64(stmt, 0);
+}
+
+fn pct(part: i64, whole: i64) f64 {
+    if (whole <= 0) return 0;
+    return @as(f64, @floatFromInt(part)) * 100.0 / @as(f64, @floatFromInt(whole));
+}
+
+fn mean(sum: f64, n: i64) f64 {
+    if (n <= 0) return 0;
+    return sum / @as(f64, @floatFromInt(n));
+}
+extern fn mz_ocr_self_check() c_int;
+extern fn mz_app_ui_self_check() c_int;
 
 fn usage() void {
     std.debug.print(
@@ -111,6 +296,11 @@ fn usage() void {
         \\  list                 Show recent stored history rows
         \\  stats                Show SQLite/blob size profile
         \\  bench                Insert synthetic fixture rows for storage profiling
+        \\  jev-self-check       Offline check of the Jev suggestion logic
+        \\  ui-self-check        Check that every control in the app's windows can be clicked
+        \\  ocr-check            Time the screen-reading fallback used by Jev
+        \\  jev-eval             Replay recorded pastes against Jev and score it (--limit N)
+        \\  jev-context          Show what Jev is told about the focused field (3 s delay)
         \\
         \\Options:
         \\  --db PATH            SQLite path (default: ~/Library/Application Support/MaccyZig/Storage.sqlite)
@@ -158,6 +348,10 @@ fn parseOptions(args: []const []const u8, cfg: *Config) !void {
             i += 1;
             if (i >= args.len) return error.MissingBenchCount;
             g_bench_count = try std.fmt.parseInt(usize, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--limit")) {
+            i += 1;
+            if (i >= args.len) return error.MissingEvalLimit;
+            g_eval_limit = try std.fmt.parseInt(usize, args[i], 10);
         } else if (std.mem.eql(u8, arg, "--no-images")) {
             cfg.enabled_types = &[_][]const u8{
                 "public.file-url",
@@ -791,7 +985,8 @@ fn appRefreshRows() !void {
             \\       last_copied_at,
             \\       COALESCE(pin_order, 0) AS pin_order,
             \\       content_kind=?2 AS has_image,
-            \\       content_kind
+            \\       content_kind,
+            \\       COALESCE(source_context, '')
             \\FROM history_items
             \\WHERE (?1 = '' OR title LIKE '%' || ?1 || '%' ESCAPE '\' OR app LIKE '%' || ?1 || '%' ESCAPE '\')
             \\  AND (pin IS NOT NULL OR id IN (
@@ -815,12 +1010,15 @@ fn appRefreshRows() !void {
         const title_txt = sqlite.sqlite3_column_text(stmt, 1) orelse @as([*c]const u8, @ptrCast(""));
         const app_txt = sqlite.sqlite3_column_text(stmt, 2) orelse @as([*c]const u8, @ptrCast(""));
         const subtitle_txt = sqlite.sqlite3_column_text(stmt, 3) orelse @as([*c]const u8, @ptrCast(""));
+        const source_txt = sqlite.sqlite3_column_text(stmt, 10) orelse @as([*c]const u8, @ptrCast(""));
         const title_z = try allocator.dupeZ(u8, std.mem.span(title_txt));
         const app_z = try allocator.dupeZ(u8, std.mem.span(app_txt));
         const subtitle_z = try allocator.dupeZ(u8, std.mem.span(subtitle_txt));
+        const source_z = try allocator.dupeZ(u8, std.mem.span(source_txt));
         try strings.append(allocator, title_z);
         try strings.append(allocator, app_z);
         try strings.append(allocator, subtitle_z);
+        try strings.append(allocator, source_z);
         try rows.append(allocator, .{
             .id = sqlite.sqlite3_column_int64(stmt, 0),
             .title = title_z.ptr,
@@ -832,6 +1030,7 @@ fn appRefreshRows() !void {
             .pinned = sqlite.sqlite3_column_int(stmt, 4),
             .has_image = sqlite.sqlite3_column_int(stmt, 8),
             .copy_count = sqlite.sqlite3_column_int(stmt, 5),
+            .source_context = source_z.ptr,
         });
     }
     c.mz_app_set_rows(rows.items.ptr, rows.items.len);
@@ -845,6 +1044,50 @@ pub export fn mz_app_copy_image_preview(row_id: i64, len_out: ?*usize) ?[*]const
     const bytes = preview orelse return null;
     if (len_out) |len| len.* = bytes.len;
     return bytes.ptr;
+}
+
+/// Log a paste so the Jev suggestion has a memory of what this user actually
+/// does in this app. Called from the panel, which is the only place that knows
+/// which app the paste is going to. When `sample_json` is present the paste is
+/// also kept as an evaluation sample: the question's ingredients plus the
+/// answer the user gave by pasting.
+pub export fn mz_app_record_paste(
+    row_id: i64,
+    dest_bundle_id: ?[*:0]const u8,
+    was_suggested: c_int,
+    row_rank: c_int,
+    suggested_row_id: i64,
+    sample_json: ?[*:0]const u8,
+) void {
+    const db = g_app_db orelse return;
+    const dest = if (dest_bundle_id) |ptr| std.mem.span(ptr) else return;
+    // The log is an optimisation for the next suggestion, never a reason to
+    // fail the paste the user just asked for.
+    db.recordPaste(row_id, dest, was_suggested != 0, row_rank) catch |err| {
+        std.debug.print("recordPaste failed: {s}\n", .{@errorName(err)});
+    };
+    if (sample_json) |ptr| {
+        db.recordJevSample(dest, row_id, row_rank, suggested_row_id, std.mem.span(ptr)) catch |err| {
+            std.debug.print("recordJevSample failed: {s}\n", .{@errorName(err)});
+        };
+    }
+}
+
+/// Fill `out` with the sequence facts for each of `ids` relative to
+/// `dest_bundle_id`. Zeroes everything on any failure.
+pub export fn mz_app_paste_signals(
+    dest_bundle_id: ?[*:0]const u8,
+    ids: ?[*]const i64,
+    count: usize,
+    out: ?[*]storage.Db.PasteSignals,
+) void {
+    const out_ptr = out orelse return;
+    const out_slice = out_ptr[0..count];
+    for (out_slice) |*o| o.* = .{};
+    const db = g_app_db orelse return;
+    const ids_ptr = ids orelse return;
+    const dest = if (dest_bundle_id) |ptr| std.mem.span(ptr) else return;
+    db.pasteSignalsForApp(dest, ids_ptr[0..count], nowUnix(), out_slice) catch {};
 }
 
 pub export fn mz_app_free_buffer(buffer: ?[*]const u8, len: usize) void {

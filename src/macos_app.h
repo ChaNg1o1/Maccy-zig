@@ -17,6 +17,9 @@ typedef struct MZAppRow {
   int pinned;
   int has_image;
   int copy_count;
+  /// Where the entry was copied from -- window title and, when the app
+  /// exposes one, the page or file -- or "" when unknown.
+  const char *source_context;
 } MZAppRow;
 
 typedef enum MZAppContentKind {
@@ -53,6 +56,11 @@ typedef struct MZAppCallbacks {
 int64_t mz_app_load_max_items(int64_t fallback);
 void mz_app_set_initial_max_items(int64_t max_items);
 void mz_app_run(MZAppCallbacks callbacks);
+
+/// Builds the app's windows off screen and checks that every control in them
+/// can actually be reached by a click. Backs `maccy-zig ui-self-check`.
+/// Returns 0 when everything is reachable.
+int mz_app_ui_self_check(void);
 void mz_app_set_action_callback(MZAppActionCallback callback);
 void mz_app_toggle(void);
 void mz_app_show(void);
@@ -62,6 +70,26 @@ void mz_app_set_status_text(const char *text);
 void mz_app_reveal_target(const char *target);
 const unsigned char *mz_app_copy_image_preview(int64_t row_id, size_t *len_out);
 void mz_app_free_buffer(const unsigned char *buffer, size_t len);
+
+/// Sequence facts about one entry relative to the app being pasted into.
+/// Layout matches storage.Db.PasteSignals.
+typedef struct MZPasteSignals {
+  int32_t pastes_into_destination;
+  int32_t pasted_here_recently;
+  int32_t sibling_pasted_here_recently;
+} MZPasteSignals;
+
+/// Log that `row_id`, at list position `row_rank`, was pasted into
+/// `dest_bundle_id`. `was_suggested` and `suggested_row_id` record what Jev
+/// had proposed, so the log shows overrides too. A non-NULL `sample_json` is
+/// stored alongside as an evaluation sample.
+void mz_app_record_paste(int64_t row_id, const char *dest_bundle_id, int was_suggested,
+                         int row_rank, int64_t suggested_row_id, const char *sample_json);
+
+/// Fill `out` (length `count`) with the sequence facts for each id in `ids`
+/// relative to `dest_bundle_id`. Must run on the db queue.
+void mz_app_paste_signals(const char *dest_bundle_id, const int64_t *ids, size_t count, MZPasteSignals *out);
+
 /// Drop all cached preview thumbnails. Must be called after history rows are
 /// deleted because SQLite reuses INTEGER PRIMARY KEY values, so a stale cache
 /// entry could otherwise serve the old image for a brand-new row.

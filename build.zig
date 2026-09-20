@@ -31,10 +31,15 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addCSourceFile(.{ .file = b.path("src/macos_paste.m"), .flags = &objc_flags });
     exe.root_module.addCSourceFile(.{ .file = b.path("src/macos_hotkey.m"), .flags = &objc_flags });
     exe.root_module.addCSourceFile(.{ .file = b.path("src/macos_app.m"), .flags = &objc_flags });
+    exe.root_module.addCSourceFile(.{ .file = b.path("src/macos_jev.m"), .flags = &objc_flags });
+    exe.root_module.addCSourceFile(.{ .file = b.path("src/macos_ocr.m"), .flags = &objc_flags });
     exe.root_module.linkFramework("Cocoa", .{});
     exe.root_module.linkFramework("QuartzCore", .{});
     exe.root_module.linkFramework("ApplicationServices", .{});
     exe.root_module.linkFramework("Carbon", .{});
+    exe.root_module.linkFramework("Security", .{});
+    exe.root_module.linkFramework("ScreenCaptureKit", .{});
+    exe.root_module.linkFramework("Vision", .{});
     exe.root_module.linkSystemLibrary("sqlite3", .{});
     exe.root_module.linkSystemLibrary("c", .{});
     b.installArtifact(exe);

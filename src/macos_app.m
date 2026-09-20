@@ -1,6 +1,8 @@
 #import "macos_app.h"
 #import "macos_hotkey.h"
 #import "macos_paste.h"
+#import "macos_jev.h"
+#import "macos_ocr.h"
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <mach/mach_time.h>
@@ -101,8 +103,23 @@ static NSString *mz_t(NSString *en) {
       // Header / tooltips
       @"Maccy": @"Maccy",
       @"Keep window on top": @"窗口置顶",
+      @"Settings": @"设置",
+      @"Close": @"关闭",
+      @"Actions": @"操作",
+      @"Actions…": @"操作…",
       // Search
       @"Search clipboard history...": @"搜索剪贴板历史…",
+      @"Search Clipboard History": @"搜索剪贴板历史",
+      @"Search": @"搜索",
+      @"Clear Search": @"清空搜索",
+      // Empty states
+      @"No Matches": @"没有匹配项",
+      @"Try another search or clear the query.": @"请尝试其他关键词，或清空当前搜索。",
+      @"No Items in This Filter": @"此筛选中没有条目",
+      @"Switch to All to see your clipboard history.": @"切换到「全部」查看剪贴板历史。",
+      @"Clipboard History Is Empty": @"剪贴板历史为空",
+      @"Copy something and it will appear here.": @"复制内容后，它会显示在这里。",
+      @"Show All": @"显示全部",
       // Tabs
       @"All": @"全部",
       @"Text": @"文本",
@@ -121,9 +138,20 @@ static NSString *mz_t(NSString *en) {
       @"Language": @"语言",
       @"History Limit": @"历史数量上限",
       @"Hotkey": @"全局快捷键",
+      @"Global Hotkey": @"全局快捷键",
+      @"General": @"通用",
+      @"History": @"历史",
+      @"Shortcuts & Permissions": @"快捷键与权限",
+      @"Direct paste requires Accessibility permission.": @"自动粘贴需要「辅助功能」权限。",
       @"Disabled": @"禁用",
       @"English": @"English",
       @"中文": @"中文",
+      @"Quit": @"退出",
+      @"Paste": @"粘贴",
+      @"Select": @"选择",
+      @"Press Return to paste": @"按回车键粘贴",
+      @"Add to Favorites": @"添加到收藏",
+      @"Remove from Favorites": @"从收藏中移除",
       // Clear-all confirmation
       @"Clear all clipboard history?": @"清空全部剪贴板历史？",
       @"This removes every item, including favorites. This cannot be undone.":
@@ -131,7 +159,7 @@ static NSString *mz_t(NSString *en) {
       @"Hotkey registration failed. Another app may already be using this shortcut.":
         @"快捷键注册失败，可能已被其他应用占用。",
       // Accessibility permission alert
-      @"Grant Accessibility Permission…": @"申请辅助功能权限…",
+      @"Grant Permission…": @"申请辅助功能权限…",
       @"Accessibility permission required": @"需要辅助功能权限",
       @"Accessibility permission already granted": @"辅助功能权限已授予",
       @"MaccyZig needs Accessibility permission so it can paste a clipboard "
@@ -145,6 +173,63 @@ static NSString *mz_t(NSString *en) {
       @"Open Settings": @"打开设置",
       @"Cancel": @"取消",
       @"OK": @"好",
+      // Jev suggestions
+      @"Jev picked": @"Jev 选中",
+      @"Suggestions": @"智能推荐",
+      @"TypeSafe API Key": @"TypeSafe API Key",
+      @"Save & Check": @"保存并验证",
+      @"Checking the key…": @"正在验证 API key…",
+      @"API key works — suggestions are on.": @"API key 可用 — 已开启智能推荐。",
+      @"Enter an API key first": @"请先填写 API key",
+      @"The keychain refused to store the key": @"钥匙串拒绝保存该 API key",
+      @"Add an API key to start getting suggestions.": @"填写 API key 后即可开始获得推荐。",
+      @"Off — nothing leaves this Mac.": @"已关闭 — 没有任何内容离开这台 Mac。",
+      @"On — sends previews, the field and the screen around it. Never credentials.":
+        @"已开启 — 预览、输入框及其周围的屏幕文字会发送给 TypeSafe；凭证永不发送。",
+      @"Jev timed out": @"Jev 响应超时",
+      @"Log Jev Decisions": @"查看 Jev 判断过程",
+      @"Jev Inspector": @"Jev 判断过程",
+      @"Nothing traced yet. Open the clipboard panel over another app.":
+        @"还没有记录。在其他应用上唤出剪贴板面板即可。",
+      @"Last screen read: %.0f×%.0f px": @"最近一次屏幕读取：%.0f×%.0f 像素",
+      @"No screen read yet — apps that report a text field never need one.":
+        @"还没有屏幕读取 —— 能提供输入框信息的应用不需要。",
+      @"Allow Screen Reading…": @"开启屏幕读取…",
+      // Edit menu — never shown (LSUIElement), but VoiceOver reads the titles.
+      @"Edit": @"编辑",
+      @"Undo": @"撤销",
+      @"Redo": @"重做",
+      @"Cut": @"剪切",
+      @"Copy": @"拷贝",
+      @"Select All": @"全选",
+      @"Open Screen Recording…": @"打开屏幕录制设置…",
+      @"Open Accessibility…": @"打开辅助功能设置…",
+      @"Allowed. MaccyZig pastes straight into the app you were using.":
+        @"已开启。MaccyZig 可以直接粘贴到你刚才使用的应用。",
+      @"Lets Jev read the screen just above where you paste.": @"让 Jev 读取你粘贴位置正上方的屏幕内容。",
+      @"Allowed. Jev reads the screen just above where you paste.":
+        @"已开启。Jev 会读取你粘贴位置正上方的屏幕内容。",
+      @"Needs a TypeSafe API key below.": @"还需要在下方填写 TypeSafe API key。",
+      @"Needs Accessibility to see what you are pasting into.":
+        @"还需要「辅助功能」权限才能知道你要粘贴到哪里。",
+      @"Needs Screen Recording to read the screen just above where you paste.":
+        @"还需要「屏幕录制」权限，用于读取你粘贴位置正上方的屏幕内容。",
+      @"Allow screen reading": @"开启屏幕读取",
+      @"Enable MaccyZig under Privacy & Security → Screen Recording, then quit and reopen "
+       "MaccyZig. Each time the panel opens, Jev will then read the part of the window just "
+       "above where you paste — never the whole screen.":
+        @"请在「隐私与安全性 → 屏幕录制」中勾选 MaccyZig，然后退出并重新打开 MaccyZig。"
+        @"之后每次打开面板时，Jev 会读取你粘贴位置正上方的那一块窗口内容，不会读取整个屏幕。",
+      @"Suggest what to paste (Jev)": @"用 Jev 推荐要粘贴的内容",
+      @"Sends item previews, the focused field and the text on screen around it to TypeSafe. "
+       "Off by default.":
+        @"会把条目预览、当前输入框及其周围的屏幕文字发送给 TypeSafe，默认关闭。",
+      @"Jev is unreachable": @"Jev 无法连接",
+      @"Jev is rate limited": @"Jev 请求过于频繁",
+      @"Jev rejected the API key": @"Jev 拒绝了该 API key",
+      @"Jev returned no answer": @"Jev 没有返回结果",
+      @"Jev returned an unreadable response": @"Jev 返回了无法解析的结果",
+      @"Jev request could not be encoded": @"Jev 请求构造失败",
       // Subtitles
       @"Copied as Image": @"复制为图片",
       @"Copied as File": @"复制为文件",
@@ -161,13 +246,33 @@ static NSString *mz_t(NSString *en) {
 // to forward-shuffle the @interface. KVC keys match @property names.
 static NSString *mz_subtitle_for_row(id row) {
   // Mirrors the original SQL CASE in main.zig but routes labels through mz_t()
-  // so the visible string follows the active language. Bundle ids (row.app)
-  // are intentionally not localized since they are stable identifiers.
+  // so the visible string follows the active language. Bundle ids remain the
+  // stable storage/search key; the UI resolves them to the installed app name.
   NSInteger kind = [[row valueForKey:@"contentKind"] integerValue];
   NSString *app = [row valueForKey:@"app"];
   if (kind == MZ_APP_CONTENT_IMAGE) return mz_t(@"Copied as Image");
   if (kind == MZ_APP_CONTENT_FILE) return mz_t(@"Copied as File");
-  if (app.length > 0) return app;
+  if (app.length > 0) {
+    static NSCache<NSString *, NSString *> *display_name_cache = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+      display_name_cache = [NSCache new];
+      display_name_cache.countLimit = 128;
+    });
+
+    NSString *cached = [display_name_cache objectForKey:app];
+    if (cached != nil) return cached;
+
+    NSURL *app_url = [NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:app];
+    NSString *display_name = nil;
+    if (app_url != nil) {
+      [app_url getResourceValue:&display_name forKey:NSURLLocalizedNameKey error:nil];
+      if (display_name.length == 0) display_name = app_url.lastPathComponent.stringByDeletingPathExtension;
+    }
+    if (display_name.length == 0) display_name = app;
+    [display_name_cache setObject:display_name forKey:app];
+    return display_name;
+  }
   if (kind == MZ_APP_CONTENT_LINK) return mz_t(@"Copied as Link");
   if (kind == MZ_APP_CONTENT_TEXT) return mz_t(@"Copied as Plain Text");
   return mz_t(@"Copied Data");
@@ -178,6 +283,7 @@ static MZAppActionCallback gActionCallback = NULL;
 static NSColor *mz_color(CGFloat r, CGFloat g, CGFloat b, CGFloat a) {
   return [NSColor colorWithSRGBRed:r / 255.0 green:g / 255.0 blue:b / 255.0 alpha:a];
 }
+
 
 static NSColor *mz_panel_fill(void) { return mz_color(18, 21, 24, 1.0); }
 static NSColor *mz_panel_border(void) { return mz_color(62, 65, 70, 0.82); }
@@ -197,8 +303,22 @@ static NSEventModifierFlags mz_app_modifier_flags(NSEvent *event) {
   return event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
 }
 
+static BOOL mz_handle_tab_key(NSView *view, NSEvent *event) {
+  if (event.keyCode != 48 || view.window == nil) return NO;
+  BOOL backwards = (mz_app_modifier_flags(event) & NSEventModifierFlagShift) != 0;
+  NSView *target = backwards ? view.previousKeyView : view.nextKeyView;
+  if (target != nil) [view.window makeFirstResponder:target];
+  return YES;
+}
+
 static BOOL mz_app_is_enter_event(NSEvent *event) {
   return event.keyCode == 36 || event.keyCode == 76;
+}
+
+static BOOL mz_activate_button_for_key(NSButton *button, NSEvent *event) {
+  if (!mz_app_is_enter_event(event) && event.keyCode != 49) return NO;
+  [button performClick:nil];
+  return YES;
 }
 
 // Match by the layout-resolved character first: hardware keyCodes name
@@ -460,6 +580,33 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
   self.needsDisplay = YES;
 }
 
+- (void)setEnabled:(BOOL)enabled {
+  [super setEnabled:enabled];
+  self.needsDisplay = YES;
+}
+
+- (BOOL)acceptsFirstResponder {
+  return YES;
+}
+
+- (BOOL)becomeFirstResponder {
+  BOOL accepted = [super becomeFirstResponder];
+  if (accepted) self.needsDisplay = YES;
+  return accepted;
+}
+
+- (BOOL)resignFirstResponder {
+  BOOL resigned = [super resignFirstResponder];
+  if (resigned) self.needsDisplay = YES;
+  return resigned;
+}
+
+- (void)keyDown:(NSEvent *)event {
+  if (mz_handle_tab_key(self, event)) return;
+  if (mz_activate_button_for_key(self, event)) return;
+  [super keyDown:event];
+}
+
 - (void)drawRect:(NSRect)dirtyRect {
   (void)dirtyRect;
   NSRect rect = NSInsetRect(self.bounds, 0.75, 0.75);
@@ -501,7 +648,7 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
 
   NSMutableParagraphStyle *style = [NSMutableParagraphStyle new];
   style.alignment = NSTextAlignmentCenter;
-  NSColor *title_color = self.active ? NSColor.whiteColor : mz_text_primary();
+  NSColor *title_color = !self.enabled ? mz_text_muted() : (self.active ? NSColor.whiteColor : mz_text_primary());
   NSDictionary *attributes = @{
     NSFontAttributeName: self.font ?: [NSFont systemFontOfSize:14 weight:NSFontWeightMedium],
     NSForegroundColorAttributeName: title_color,
@@ -513,6 +660,135 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
                                 NSWidth(self.bounds) - 8.0,
                                 title_size.height);
   [self.title drawInRect:title_rect withAttributes:attributes];
+
+  if (self.window.firstResponder == self) {
+    [mz_primary_orange_shadow() setStroke];
+    NSBezierPath *focus = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 2.0, 2.0)
+                                                          xRadius:5.0
+                                                          yRadius:5.0];
+    focus.lineWidth = 2.0;
+    [focus stroke];
+  }
+}
+@end
+
+@interface MZSettingsChoiceButton : NSButton
+@property(nonatomic, strong) NSTextField *valueLabel;
+@property(nonatomic, strong) NSImageView *chevronView;
+- (void)setDisplayTitle:(NSString *)title;
+@end
+
+@implementation MZSettingsChoiceButton
+- (instancetype)initWithFrame:(NSRect)frameRect {
+  if ((self = [super initWithFrame:frameRect])) {
+    self.title = @"";
+    self.bordered = NO;
+    self.focusRingType = NSFocusRingTypeNone;
+    self.wantsLayer = YES;
+    self.layer.cornerRadius = 8.0;
+    self.layer.backgroundColor = mz_color(28, 31, 35, 1.0).CGColor;
+    self.layer.borderWidth = 1.0;
+    self.layer.borderColor = mz_card_border().CGColor;
+
+    _valueLabel = mz_label(@"", [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], mz_text_primary());
+    [self addSubview:_valueLabel];
+
+    _chevronView = [[NSImageView alloc] initWithFrame:NSZeroRect];
+    _chevronView.image = mz_symbol_image(@"chevron.up.chevron.down", 12.0);
+    _chevronView.contentTintColor = mz_text_secondary();
+    _chevronView.accessibilityElement = NO;
+    [self addSubview:_chevronView];
+  }
+  return self;
+}
+
+- (void)setDisplayTitle:(NSString *)title {
+  self.valueLabel.stringValue = title ?: @"";
+  self.accessibilityValue = self.valueLabel.stringValue;
+}
+
+- (BOOL)acceptsFirstResponder {
+  return YES;
+}
+
+- (void)layout {
+  [super layout];
+  self.valueLabel.frame = NSMakeRect(14.0, floor((NSHeight(self.bounds) - 22.0) * 0.5), MAX(0.0, NSWidth(self.bounds) - 52.0), 22.0);
+  self.chevronView.frame = NSMakeRect(NSWidth(self.bounds) - 30.0, floor((NSHeight(self.bounds) - 18.0) * 0.5), 18.0, 18.0);
+}
+
+// The label and chevron inside are decoration: a click on them is a click on
+// the button. Whether the point is in the button at all is left to AppKit --
+// `point` arrives in the superview's coordinates, and an earlier version here
+// compared it with `bounds`, which made every one of these buttons dead except
+// where the two coordinate spaces happened to overlap.
+- (NSView *)hitTest:(NSPoint)point {
+  return [super hitTest:point] != nil ? self : nil;
+}
+
+- (BOOL)becomeFirstResponder {
+  BOOL accepted = [super becomeFirstResponder];
+  if (accepted) {
+    self.layer.borderWidth = 2.0;
+    self.layer.borderColor = mz_primary_orange_shadow().CGColor;
+  }
+  return accepted;
+}
+
+- (BOOL)resignFirstResponder {
+  BOOL resigned = [super resignFirstResponder];
+  if (resigned) {
+    self.layer.borderWidth = 1.0;
+    self.layer.borderColor = mz_card_border().CGColor;
+  }
+  return resigned;
+}
+
+- (void)keyDown:(NSEvent *)event {
+  if (mz_handle_tab_key(self, event)) return;
+  if (mz_activate_button_for_key(self, event)) return;
+  [super keyDown:event];
+}
+@end
+
+// While a text field is being edited the first responder is the shared field
+// editor, not the field; resolve back to the field the user sees.
+static NSView *mz_focused_view(NSWindow *window) {
+  NSResponder *responder = window.firstResponder;
+  if ([responder isKindOfClass:[NSText class]] && ((NSText *)responder).isFieldEditor) {
+    id delegate = ((NSText *)responder).delegate;
+    if ([delegate isKindOfClass:[NSView class]]) return delegate;
+  }
+  return [responder isKindOfClass:[NSView class]] ? (NSView *)responder : nil;
+}
+
+@interface MZSettingsWindow : NSWindow
+// Styled container around a borderless text field; it carries the focus
+// border the field itself cannot draw in this design.
+@property(nonatomic, weak) NSView *textWell;
+@end
+
+@implementation MZSettingsWindow
+- (BOOL)makeFirstResponder:(NSResponder *)responder {
+  BOOL changed = [super makeFirstResponder:responder];
+  NSView *well = self.textWell;
+  if (well != nil) {
+    BOOL focused = [mz_focused_view(self) isDescendantOf:well];
+    well.layer.borderWidth = focused ? 2.0 : 1.0;
+    well.layer.borderColor = (focused ? mz_primary_orange_shadow() : mz_card_border()).CGColor;
+  }
+  return changed;
+}
+
+- (void)sendEvent:(NSEvent *)event {
+  if (event.type == NSEventTypeKeyDown && event.keyCode == 48) {
+    NSView *current = mz_focused_view(self) ?: self.initialFirstResponder;
+    BOOL backwards = (mz_app_modifier_flags(event) & NSEventModifierFlagShift) != 0;
+    NSView *target = backwards ? current.previousKeyView : current.nextKeyView;
+    if (target != nil) [self makeFirstResponder:target];
+    return;
+  }
+  [super sendEvent:event];
 }
 @end
 
@@ -527,6 +803,15 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
 @property(nonatomic) BOOL pinned;
 @property(nonatomic) BOOL hasImage;
 @property(nonatomic) NSInteger copyCount;
+@property(nonatomic, copy) NSString *sourceContext;
+// Jev rated this entry plausible but did not pick it. Marked, never
+// auto-selected -- a second highlight would just be a second selection.
+@property(nonatomic) BOOL jevRunnerUp;
+// Jev's pick for this panel open, with its probability for the row's label.
+// A pick has to be unmistakable: it used to look exactly like any selected
+// row, with the only trace a line of small text in the footer.
+@property(nonatomic) BOOL jevPicked;
+@property(nonatomic) double jevConfidence;
 @end
 @implementation MZRow
 @end
@@ -535,6 +820,10 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
 @property(nonatomic) int64_t rowID;
 @end
 @implementation MZRowActionButton
+- (BOOL)acceptsFirstResponder {
+  return YES;
+}
+
 - (BOOL)acceptsFirstMouse:(NSEvent *)event {
   (void)event;
   return YES;
@@ -542,6 +831,26 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
 
 - (BOOL)mouseDownCanMoveWindow {
   return NO;
+}
+
+- (void)keyDown:(NSEvent *)event {
+  if (mz_handle_tab_key(self, event)) return;
+  if (mz_activate_button_for_key(self, event)) return;
+  [super keyDown:event];
+}
+@end
+
+// A key cap that can be pressed. It has neither an image nor a title for
+// AppKit to dim, so it shows the press itself.
+@interface MZKeyCapButton : MZRowActionButton
+@end
+@implementation MZKeyCapButton
+- (void)mouseDown:(NSEvent *)event {
+  CGColorRef resting = CGColorRetain(self.layer.backgroundColor);
+  self.layer.backgroundColor = mz_color(58, 63, 70, 1.0).CGColor;
+  [super mouseDown:event];  // tracks the mouse; returns when it comes back up
+  self.layer.backgroundColor = resting;
+  CGColorRelease(resting);
 }
 @end
 
@@ -645,6 +954,7 @@ static NSTableView *mz_enclosing_table_view(NSView *view) {
 @property(nonatomic, strong) NSView *dividerView;
 @property(nonatomic, strong) NSTrackingArea *previewTrackingArea;
 @property(nonatomic, strong) NSPopover *previewPopover;
+@property(nonatomic, strong) NSTimer *previewTimer;
 @property(nonatomic) BOOL previewEnabled;
 @property(nonatomic) NSInteger rowIndex;
 @property(nonatomic) NSUInteger configuredGeneration;
@@ -723,7 +1033,14 @@ static void mz_debug_log(NSString *format, ...) {
   return NO;
 }
 
+// Text previews need a dwell: without it a bubble fired on every pass of the
+// mouse across the list on the way to the gear or a star. Image rows show
+// nothing useful until hovered, so they open at once.
+static const NSTimeInterval kMZTextPreviewHoverDelay = 0.45;
+
 - (void)dismissImagePreview {
+  [self.previewTimer invalidate];
+  self.previewTimer = nil;
   if (self.previewPopover != nil && self.previewPopover.shown) {
     [self.previewPopover close];
   }
@@ -759,11 +1076,33 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
     });
     if (bytes == NULL || len == 0) return nil;
 
-    NSData *data = [NSData dataWithBytes:bytes length:len];
+    // Decode straight to a popover-sized bitmap: NSImage initWithData would
+    // defer a full-resolution decode of a multi-MB screenshot to first draw,
+    // which is the visible lag between hover and preview.
+    NSData *data = [NSData dataWithBytesNoCopy:(void *)bytes length:len freeWhenDone:NO];
+    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    CGImageRef thumb = NULL;
+    if (source != NULL) {
+      NSDictionary *options = @{
+        (__bridge id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+        (__bridge id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+        (__bridge id)kCGImageSourceShouldCacheImmediately: @YES,
+        // 2x the popover's 360pt max edge, for Retina.
+        (__bridge id)kCGImageSourceThumbnailMaxPixelSize: @720,
+      };
+      thumb = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options);
+      CFRelease(source);
+    }
     mz_app_free_buffer(bytes, len);
-    image = [[NSImage alloc] initWithData:data];
-    if (image == nil) return nil;
-    [mz_preview_cache() setObject:image forKey:cacheKey cost:(NSUInteger)len];
+    if (thumb == NULL) return nil;
+    size_t px_w = CGImageGetWidth(thumb);
+    size_t px_h = CGImageGetHeight(thumb);
+    // Point size at 2x, but never upscale a small original past its pixels.
+    CGFloat pt_scale = (px_w >= 720 || px_h >= 720) ? 2.0 : 1.0;
+    image = [[NSImage alloc] initWithCGImage:thumb size:NSMakeSize(px_w / pt_scale, px_h / pt_scale)];
+    NSUInteger cost = CGImageGetBytesPerRow(thumb) * px_h;
+    CGImageRelease(thumb);
+    [mz_preview_cache() setObject:image forKey:cacheKey cost:cost];
   }
 
   const CGFloat max_width = 360.0;
@@ -826,6 +1165,11 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
   content.wantsLayer = YES;
   content.layer.cornerRadius = 10.0;
   content.layer.masksToBounds = YES;
+  // Without a surface of its own the bubble inherits NSPopover's vibrancy and
+  // you read the clipboard entry through whatever window is behind it.
+  content.layer.backgroundColor = mz_panel_fill().CGColor;
+  content.layer.borderWidth = 1.0;
+  content.layer.borderColor = mz_panel_border().CGColor;
 
   NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(horizontal_padding, vertical_padding,
                                                                         textWidth,
@@ -840,7 +1184,7 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
 
   NSTextView *text = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, textWidth, text_area)];
   text.editable = NO;
-  text.selectable = YES;
+  text.selectable = NO;
   text.drawsBackground = NO;
   text.backgroundColor = NSColor.clearColor;
   text.textContainerInset = NSMakeSize(0, 0);
@@ -864,10 +1208,53 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
   return controller;
 }
 
+// A preview is only worth covering the screen for when it shows something the
+// row itself cannot: a thumbnail, or text the cell had to truncate. Popping a
+// bubble over "2026-09-19" -- already fully visible -- is pure obstruction.
+- (BOOL)previewWouldRevealMore {
+  MZRow *row = [self.objectValue isKindOfClass:[MZRow class]] ? self.objectValue : nil;
+  if (row == nil) return NO;
+  if ((row.contentKind == MZ_APP_CONTENT_IMAGE) || row.hasImage) return YES;
+
+  NSString *body = row.title ?: @"";
+  if (body.length == 0) return NO;
+  if ([body rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound) return YES;
+
+  CGFloat available = self.titleLabel.frame.size.width;
+  if (available <= 0.0) return YES;  // pre-layout: let the popover decide
+  NSFont *font = self.titleLabel.font ?: [NSFont systemFontOfSize:13];
+  CGFloat needed = [body sizeWithAttributes:@{NSFontAttributeName : font}].width;
+  return needed > available;
+}
+
+- (void)scheduleImagePreview {
+  if (!self.previewEnabled || self.previewPopover.shown) return;
+  [self.previewTimer invalidate];
+  if (![self previewWouldRevealMore]) {
+    self.previewTimer = nil;
+    return;
+  }
+  MZRow *row = [self.objectValue isKindOfClass:[MZRow class]] ? self.objectValue : nil;
+  if (row != nil && (row.contentKind == MZ_APP_CONTENT_IMAGE || row.hasImage)) {
+    self.previewTimer = nil;
+    [self showImagePreviewIfNeeded];
+    return;
+  }
+  __weak typeof(self) weakSelf = self;
+  self.previewTimer = [NSTimer scheduledTimerWithTimeInterval:kMZTextPreviewHoverDelay
+                                                      repeats:NO
+                                                        block:^(NSTimer *timer) {
+    (void)timer;
+    [weakSelf showImagePreviewIfNeeded];
+  }];
+}
+
 - (void)showImagePreviewIfNeeded {
+  self.previewTimer = nil;
   if (!self.previewEnabled || self.previewPopover.shown) return;
   MZRow *row = [self.objectValue isKindOfClass:[MZRow class]] ? self.objectValue : nil;
   if (row == nil) return;
+  if (![self previewWouldRevealMore]) return;
 
   // Image rows render the decoded thumbnail; everything else (text, link,
   // file, other) gets a scrollable text preview so users can see the full
@@ -880,11 +1267,17 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
 
   if (self.previewPopover == nil) {
     self.previewPopover = [NSPopover new];
-    self.previewPopover.behavior = NSPopoverBehaviorTransient;
-    self.previewPopover.animates = YES;
+    // Transient closes itself on the next click anywhere -- and swallows that
+    // click, so the row the user was aiming for never got selected. We already
+    // close on exit, scroll and mouse-down, so own the lifetime outright.
+    self.previewPopover.behavior = NSPopoverBehaviorApplicationDefined;
   }
+  // The fade-in is another ~0.2s of waiting on the one preview meant to be instant.
+  self.previewPopover.animates = !useImage;
   self.previewPopover.contentViewController = controller;
-  [self.previewPopover showRelativeToRect:self.rowContainer.bounds ofView:self.rowContainer preferredEdge:NSRectEdgeMaxX];
+  // Anchored to the whole cell, not the inner container: from the container's
+  // edge the bubble sat on top of the list's scroller.
+  [self.previewPopover showRelativeToRect:self.bounds ofView:self preferredEdge:NSRectEdgeMaxX];
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
@@ -915,6 +1308,7 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
 
     _iconView = [[NSImageView alloc] initWithFrame:NSZeroRect];
     _iconView.imageScaling = NSImageScaleProportionallyUpOrDown;
+    _iconView.accessibilityElement = NO;
     [_iconBackdrop addSubview:_iconView];
 
     _titleLabel = mz_label(@"", [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold], mz_text_primary());
@@ -931,7 +1325,7 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
     _favoriteButton.title = @"";
     _favoriteButton.bordered = NO;
     _favoriteButton.imageScaling = NSImageScaleProportionallyUpOrDown;
-    _favoriteButton.focusRingType = NSFocusRingTypeNone;
+    _favoriteButton.focusRingType = NSFocusRingTypeDefault;
     [_rowContainer addSubview:_favoriteButton];
 
     _dividerView = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -950,7 +1344,13 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
   self.objectValue = row;
   self.interactionTarget = target;
   self.titleLabel.stringValue = row.title ?: @"";
-  self.subtitleLabel.stringValue = mz_subtitle_for_row(row);
+  NSString *subtitle = mz_subtitle_for_row(row);
+  if (row.jevPicked) {
+    subtitle = [NSString stringWithFormat:@"✦ %@ · %.0f%% · %@", mz_t(@"Jev picked"), row.jevConfidence * 100.0, subtitle];
+  } else if (row.jevRunnerUp) {
+    subtitle = [@"✦ " stringByAppendingString:subtitle];
+  }
+  self.subtitleLabel.stringValue = subtitle;
   self.iconView.image = icon;
   self.timeLabel.stringValue = [mz_time_formatter() stringFromDate:[NSDate dateWithTimeIntervalSince1970:row.copiedAt]];
 
@@ -959,14 +1359,21 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
   self.favoriteButton.rowID = row.rowID;
   self.favoriteButton.image = mz_star_image(row.pinned);
   self.favoriteButton.contentTintColor = row.pinned ? mz_warning_yellow() : mz_text_secondary();
+  self.favoriteButton.toolTip = mz_t(row.pinned ? @"Remove from Favorites" : @"Add to Favorites");
+  self.favoriteButton.accessibilityLabel = self.favoriteButton.toolTip;
 
   self.rowButton.target = target;
-  self.rowButton.action = @selector(pasteRow:);
+  self.rowButton.action = @selector(selectRowFromButton:);
   self.rowButton.rowID = row.rowID;
+  NSString *select_label = row.title.length > 0
+      ? [NSString stringWithFormat:@"%@: %@", mz_t(@"Select"), row.title]
+      : mz_t(@"Select");
+  self.rowButton.accessibilityLabel = select_label;
+  self.rowButton.accessibilityHelp = mz_t(@"Press Return to paste");
 
   [self applySelectedAppearance:selected];
   self.dividerView.hidden = NO;
-  self.subtitleLabel.textColor = mz_text_secondary();
+  self.subtitleLabel.textColor = row.jevPicked ? mz_primary_orange_shadow() : mz_text_secondary();
   self.timeLabel.textColor = mz_text_secondary();
   BOOL preview_was_enabled = self.previewEnabled;
   // Every row is hover-previewable: image rows show the decoded thumbnail,
@@ -990,9 +1397,17 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
 // change, so we skip the full configureWithRow rebuild (title/subtitle/icon/
 // time/buttons/trackingArea) and avoid the surrounding layout pass.
 - (void)applySelectedAppearance:(BOOL)selected {
-  CGColorRef fill = (selected ? mz_selected_fill() : NSColor.clearColor).CGColor;
-  CGColorRef border = (selected ? mz_selected_border() : NSColor.clearColor).CGColor;
-  CGFloat border_width = selected ? 1.0 : 0.0;
+  MZRow *row = [self.objectValue isKindOfClass:[MZRow class]] ? self.objectValue : nil;
+  // Jev's pick keeps its accent whether or not it is still the selected row:
+  // arrowing away should not erase the suggestion the user is weighing.
+  BOOL picked = row.jevPicked;
+  NSColor *fill_color = picked ? [mz_primary_orange() colorWithAlphaComponent:selected ? 0.16 : 0.07]
+                               : (selected ? mz_selected_fill() : NSColor.clearColor);
+  NSColor *border_color = picked ? [mz_primary_orange_shadow() colorWithAlphaComponent:selected ? 0.95 : 0.45]
+                                 : (selected ? mz_selected_border() : NSColor.clearColor);
+  CGColorRef fill = fill_color.CGColor;
+  CGColorRef border = border_color.CGColor;
+  CGFloat border_width = picked ? 1.5 : (selected ? 1.0 : 0.0);
   CALayer *layer = self.rowContainer.layer;
   if (layer == nil) return;
   if (!CGColorEqualToColor(layer.backgroundColor, fill)) layer.backgroundColor = fill;
@@ -1021,14 +1436,19 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
     self.previewTrackingArea = nil;
   }
   if (!self.previewEnabled) return;
+  // No NSTrackingMouseMoved: the dwell timer is armed once on entry, so
+  // re-arming on every drift inside the row would only keep pushing the
+  // preview away, and the move events cost CPU on every pass over the list.
   self.previewTrackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds
-                                                          options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
+                                                          options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
                                                             owner:self
                                                          userInfo:nil];
   [self addTrackingArea:self.previewTrackingArea];
 }
 
 - (void)mouseDown:(NSEvent *)event {
+  // The user is acting on the row, not reading it.
+  [self dismissImagePreview];
   if (self.interactionTarget != nil &&
       [self.interactionTarget respondsToSelector:@selector(selectRowForItemView:)]) {
 #pragma clang diagnostic push
@@ -1037,7 +1457,7 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
 #pragma clang diagnostic pop
   }
 
-  if (event.clickCount >= 1 && self.interactionTarget != nil &&
+  if (event.clickCount >= 2 && self.interactionTarget != nil &&
       [self.interactionTarget respondsToSelector:@selector(activateSelection:)]) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
@@ -1048,13 +1468,7 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
 
 - (void)mouseEntered:(NSEvent *)event {
   (void)event;
-  [self showImagePreviewIfNeeded];
-}
-
-- (void)mouseMoved:(NSEvent *)event {
-  (void)event;
-  if (self.previewPopover.shown) return;
-  [self showImagePreviewIfNeeded];
+  [self scheduleImagePreview];
 }
 
 - (void)mouseExited:(NSEvent *)event {
@@ -1079,11 +1493,14 @@ static NSCache<NSNumber *, NSImage *> *mz_preview_cache(void) {
   self.iconBackdrop.frame = NSMakeRect(8, header_height - 59, 48, 48);
   self.iconView.frame = NSMakeRect(7, 7, 34, 34);
 
-  CGFloat right_margin = 150.0;
+  // right_margin reserves the timestamp + star column. It used to be 150,
+  // which left a 32pt hole between the truncated title and the timestamp;
+  // 134 keeps a 16pt gutter and hands the rest back to the title.
+  CGFloat right_margin = 134.0;
   self.titleLabel.frame = NSMakeRect(76, header_height - 35, container_width - 76 - right_margin, 23);
   self.subtitleLabel.frame = NSMakeRect(76, header_height - 58, container_width - 76 - right_margin, 18);
   self.timeLabel.frame = NSMakeRect(container_width - 118, header_height - 33, 72, 20);
-  self.favoriteButton.frame = NSMakeRect(container_width - 38, header_height - 42, 28, 28);
+  self.favoriteButton.frame = NSMakeRect(container_width - 40, header_height - 44, 32, 32);
 
   if (expanded) {
     self.actionBar.frame = NSMakeRect(0, 0, container_width, action_height);
@@ -1158,14 +1575,14 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 #pragma clang diagnostic pop
     }
 
-    if ([target respondsToSelector:@selector(activateSelection:)]) {
+    if (event.clickCount >= 2 && [target respondsToSelector:@selector(activateSelection:)]) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
       [target performSelector:@selector(activateSelection:) withObject:rowView];
 #pragma clang diagnostic pop
       return YES;
     }
-    return NO;
+    return YES;
   }
   return NO;
 }
@@ -1198,6 +1615,7 @@ static BOOL mz_activate_row_at_event(NSView *container, id target, NSEvent *even
 }
 
 - (void)keyDown:(NSEvent *)event {
+  if (mz_handle_tab_key(self, event)) return;
   if (self.interactionTarget != nil &&
       [self.interactionTarget respondsToSelector:@selector(handleKeyEvent:)]) {
     SEL selector = @selector(handleKeyEvent:);
@@ -1255,25 +1673,61 @@ static const CGFloat kMZPanelMinHeight = 460.0;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSImage *> *iconCache;
 @property(nonatomic, strong) NSMutableArray<NSButton *> *filterButtons;
 @property(nonatomic, strong) NSTextField *countLabel;
-@property(nonatomic, strong) NSButton *clearButton;
+@property(nonatomic, strong) NSButton *footerActionsButton;
+// Bottom-right footer strip: which entry Jev picked, or why it has none.
+@property(nonatomic, strong) NSTextField *jevBadge;
+@property(nonatomic, strong) NSMenuItem *jevMenuItem;
+@property(nonatomic, strong) NSMenuItem *jevScreenMenuItem;
+// Row Jev proposed this time the panel was opened, 0 when it proposed
+// nothing. Recorded with the paste so the log shows overrides too.
+@property(nonatomic) int64_t jevSuggestedRowID;
+@property(nonatomic) double jevSuggestedConfidence;
+// Rows Jev ranked second and third; marked, never auto-selected.
+@property(nonatomic, strong) NSSet<NSNumber *> *jevRunnerUpRowIDs;
+// Bumped for every suggestion attempt so a late database hop can tell it
+// has been superseded.
+@property(nonatomic) NSUInteger jevRequestGeneration;
+// Set as soon as the user moves the selection, types, or clicks. A
+// suggestion that lands afterwards must not yank what they chose.
+@property(nonatomic) BOOL userDroveSelection;
+// Frame of the element that had focus when the panel was summoned, so the
+// screen reader looks at where the paste will land rather than at a corner.
 @property(nonatomic, strong) NSButton *pinButton;
 @property(nonatomic, strong) NSButton *settingsButton;
+@property(nonatomic, strong) NSButton *searchClearButton;
 @property(nonatomic, strong) id keyEventMonitor;
 @property(nonatomic, strong) NSRunningApplication *previousFrontmostApp;
-@property(nonatomic, strong) NSMenuItem *languageMenuItem;
-@property(nonatomic, strong) NSMenuItem *historyLimitMenuItem;
+@property(nonatomic, strong) NSWindow *settingsWindow;
+@property(nonatomic, strong) MZSettingsChoiceButton *settingsLanguageButton;
+@property(nonatomic, strong) MZSettingsChoiceButton *settingsHistoryButton;
+@property(nonatomic, strong) MZSettingsChoiceButton *settingsHotkeyButton;
+@property(nonatomic, strong) NSSwitch *settingsJevSwitch;
+@property(nonatomic, strong) NSSecureTextField *settingsJevKeyField;
+@property(nonatomic, strong) NSTextField *settingsJevStatus;
+@property(nonatomic, copy) NSArray *clickTraceMonitors;
+@property(nonatomic, strong) NSTextField *settingsAccessNote;
+@property(nonatomic, strong) MZChamferedButton *settingsAccessButton;
+@property(nonatomic, strong) NSTextField *settingsScreenNote;
+@property(nonatomic, strong) MZChamferedButton *settingsScreenButton;
+@property(nonatomic, strong) NSWindow *inspectorWindow;
+@property(nonatomic, strong) NSTextView *inspectorText;
+@property(nonatomic, strong) NSImageView *inspectorImage;
+@property(nonatomic, strong) NSTextField *inspectorCaption;
+@property(nonatomic, strong) NSButton *settingsJevSave;
 // Chrome views referenced from -relayoutPanelChrome so the layout stays
 // pixel-correct after the user resizes the window.
 @property(nonatomic, strong) NSImageView *titleMark;
 @property(nonatomic, strong) NSTextField *appTitleLabel;
 @property(nonatomic, strong) NSView *searchBox;
-@property(nonatomic, strong) NSView *searchHint;
+@property(nonatomic, strong) NSButton *searchHint;
 @property(nonatomic, strong) NSView *tabsCard;
 @property(nonatomic, strong) NSMutableArray<NSView *> *tabDividers;
 @property(nonatomic, strong) NSView *favoritesCard;
 @property(nonatomic, strong) NSView *listCard;
-@property(nonatomic, strong) NSView *clearHint;
-@property(nonatomic, strong) NSMenuItem *hotkeyMenuItem;
+@property(nonatomic, strong) NSView *emptyStateView;
+@property(nonatomic, strong) NSTextField *emptyStateTitleLabel;
+@property(nonatomic, strong) NSTextField *emptyStateBodyLabel;
+@property(nonatomic, strong) NSButton *emptyStateActionButton;
 @property(nonatomic) MZFilterMode filterMode;
 @property(nonatomic) NSUInteger filterChangeGeneration;
 // Bumped whenever self.rows is rebuilt; visible cells remember the generation
@@ -1282,6 +1736,9 @@ static const CGFloat kMZPanelMinHeight = 460.0;
 @property(nonatomic) NSInteger selectedRowIndex;
 @property(nonatomic) NSInteger maxItemsLimit;
 @property(nonatomic) BOOL windowPinned;
+// Declared for the C helpers above the implementation.
+- (NSInteger)indexOfRowID:(int64_t)rowID inRows:(NSArray<MZRow *> *)rows;
+- (void)stampJevMarksOnRows:(NSArray<MZRow *> *)rows;
 @end
 
 static MZAppController *gController = nil;
@@ -1298,8 +1755,29 @@ static int mz_app_target_pid_for_action(MZAppController *controller, MZAppAction
   }
 }
 
+// Every paste is logged against the app it landed in. That log is the only
+// part of the suggestion that remembers this particular user.
+static void mz_app_log_paste(MZAppController *controller, MZAppAction action, int64_t rowID) {
+  if (action != MZ_APP_ACTION_PASTE && action != MZ_APP_ACTION_PASTE_PLAIN) return;
+  NSString *bundle = controller.previousFrontmostApp.bundleIdentifier;
+  if (bundle.length == 0) return;
+  int64_t suggested = controller.jevSuggestedRowID;
+  int was_suggested = (suggested == rowID) ? 1 : 0;
+  // Position in the list the user was looking at. Opening the panel at all
+  // suggests the newest entry is not what they came for; this is how we find
+  // out how true that is for this user.
+  int rank = (int)[controller indexOfRowID:rowID inRows:controller.rows];
+  // What Jev was asked for this panel open, if it got as far as asking. Taken
+  // (not copied) so one question can never be attributed to two pastes.
+  NSString *sample = mz_jev_take_last_sample();
+  dispatch_async(mz_db_queue(), ^{
+    mz_app_record_paste(rowID, bundle.UTF8String, was_suggested, rank, suggested, sample.UTF8String);
+  });
+}
+
 static void mz_app_dispatch_action(MZAppController *controller, MZAppAction action, int64_t rowID) {
   int target_pid = mz_app_target_pid_for_action(controller, action);
+  mz_app_log_paste(controller, action, rowID);
   // All action callbacks touch SQLite on the Zig side — run them on the db
   // queue so clears and writes never block the UI thread.
   if (controller.actionCallback != NULL) {
@@ -1357,7 +1835,102 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   return self;
 }
 
+// An LSUIElement app shows no menu bar, but NSApp.mainMenu is still what makes
+// AppKit dispatch ⌘X/⌘C/⌘V/⌘A/⌘Z down the responder chain. Without one, no
+// text field anywhere in the app can be pasted into -- which is why the search
+// field used to forward these by hand, and why the Settings API key field
+// could not be pasted into at all.
+static void mz_install_edit_menu(void) {
+  if (NSApp.mainMenu != nil) return;
+  NSMenu *main = [[NSMenu alloc] initWithTitle:@""];
+
+  NSMenuItem *app_item = [main addItemWithTitle:@"MaccyZig" action:NULL keyEquivalent:@""];
+  app_item.submenu = [[NSMenu alloc] initWithTitle:@"MaccyZig"];
+
+  NSMenuItem *edit_item = [main addItemWithTitle:@"Edit" action:NULL keyEquivalent:@""];
+  NSMenu *edit = [[NSMenu alloc] initWithTitle:mz_t(@"Edit")];
+  // Standard selectors, resolved against whatever holds first responder.
+  [edit addItemWithTitle:mz_t(@"Undo") action:@selector(undo:) keyEquivalent:@"z"];
+  [[edit addItemWithTitle:mz_t(@"Redo") action:@selector(redo:) keyEquivalent:@"z"]
+      setKeyEquivalentModifierMask:NSEventModifierFlagCommand | NSEventModifierFlagShift];
+  [edit addItem:[NSMenuItem separatorItem]];
+  [edit addItemWithTitle:mz_t(@"Cut") action:@selector(cut:) keyEquivalent:@"x"];
+  [edit addItemWithTitle:mz_t(@"Copy") action:@selector(copy:) keyEquivalent:@"c"];
+  [edit addItemWithTitle:mz_t(@"Paste") action:@selector(paste:) keyEquivalent:@"v"];
+  [edit addItemWithTitle:mz_t(@"Select All") action:@selector(selectAll:) keyEquivalent:@"a"];
+  edit_item.submenu = edit;
+
+  NSApp.mainMenu = main;
+}
+
+// "It will not click" is a statement about event routing, and routing cannot
+// be seen from outside: whether the mouse-down reached this process at all,
+// which window and view it was aimed at, and whether the app was active and
+// the window key when it arrived. While tracing is on, every mouse-down says
+// so in the inspector -- including the ones that fell on the panel's rectangle
+// and were delivered to some other app, which is what a dead panel looks like
+// from the inside.
+//
+// The monitors exist only while tracing is on: an app that is not being
+// debugged has no business watching mouse-downs, its own or anyone else's.
+- (void)syncClickTrace {
+  if (!mz_jev_debug()) {
+    for (id monitor in self.clickTraceMonitors) [NSEvent removeMonitor:monitor];
+    self.clickTraceMonitors = nil;
+    return;
+  }
+  if (self.clickTraceMonitors != nil) return;
+  __weak typeof(self) weak_self = self;
+  id local = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown
+                                                   handler:^NSEvent *_Nullable(NSEvent *event) {
+    MZAppController *controller = weak_self;
+    NSWindow *window = event.window;
+    NSView *frame_view = window.contentView.superview ?: window.contentView;
+    NSView *hit = [frame_view hitTest:event.locationInWindow];
+    NSView *control = hit;
+    while (control != nil && ![control isKindOfClass:NSControl.class]) control = control.superview;
+    NSString *where = window == controller.panel ? @"panel"
+        : window == controller.settingsWindow ? @"settings"
+        : window == controller.inspectorWindow ? @"inspector"
+        : window == nil ? @"no window" : NSStringFromClass(window.class);
+    mz_jev_log(@"click: %@ at %.0f,%.0f -> %@%@ | app active=%d, window key=%d%@", where,
+               event.locationInWindow.x, event.locationInWindow.y,
+               hit != nil ? NSStringFromClass(hit.class) : @"nothing",
+               control != nil && control != hit ? [@" in " stringByAppendingString:NSStringFromClass(control.class)] : @"",
+               NSApp.isActive, window.isKeyWindow,
+               [control isKindOfClass:NSControl.class] && !((NSControl *)control).enabled ? @", control is DISABLED" : @"");
+    return event;
+  }];
+  // Mouse-downs that went to another app. Only worth a line when they fell
+  // inside one of this app's visible windows: that click was meant for us.
+  // Nothing else about them is looked at or kept.
+  id global = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown handler:^(NSEvent *event) {
+    (void)event;
+    MZAppController *controller = weak_self;
+    NSPoint at = NSEvent.mouseLocation;
+    for (NSWindow *window in @[ controller.panel ?: (id)NSNull.null, controller.settingsWindow ?: (id)NSNull.null ]) {
+      if (![window isKindOfClass:NSWindow.class] || !window.isVisible || !NSPointInRect(at, window.frame)) continue;
+      mz_jev_log(@"click: at %.0f,%.0f on screen, inside the %@, was delivered to ANOTHER app (frontmost: %@) | "
+                 @"app active=%d, window key=%d, ignores mouse=%d, level=%ld",
+                 at.x, at.y, window == controller.panel ? @"panel" : @"settings window",
+                 NSWorkspace.sharedWorkspace.frontmostApplication.localizedName, NSApp.isActive, window.isKeyWindow,
+                 window.ignoresMouseEvents, (long)window.level);
+    }
+  }];
+  self.clickTraceMonitors = [NSArray arrayWithObjects:local, global, nil];  // global is nil without permission
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
+  mz_install_edit_menu();
+  [self syncClickTrace];
+  // ~12s of model loading, once, on a utility queue. Starting it here means
+  // the first panel that needs to read the screen does not pay for it.
+  if (mz_jev_enabled()) mz_ocr_prewarm();
+  // Tracing is a mode you leave on while chasing something, so bring its
+  // window back rather than making the user find the menu item again.
+  if (mz_jev_debug()) {
+    dispatch_async(dispatch_get_main_queue(), ^{ [self showJevInspector]; });
+  }
   (void)notification;
   [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
@@ -1484,6 +2057,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   self.titleMark = [[NSImageView alloc] initWithFrame:NSZeroRect];
   self.titleMark.image = mz_resource_image(@"logo-mark", @"png");
   self.titleMark.imageScaling = NSImageScaleProportionallyUpOrDown;
+  self.titleMark.accessibilityElement = NO;
   self.titleMark.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin | NSViewMinYMargin;
   [self.rootView addSubview:self.titleMark];
 
@@ -1494,10 +2068,13 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 
   self.pinButton = [self chromeButtonWithSymbol:@"pin" action:@selector(toggleWindowPin:)];
   self.pinButton.toolTip = mz_t(@"Keep window on top");
+  self.pinButton.accessibilityLabel = self.pinButton.toolTip;
   self.pinButton.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
   [self.rootView addSubview:self.pinButton];
 
-  self.settingsButton = [self chromeButtonWithSymbol:@"gearshape" action:@selector(showHeaderMenu:)];
+  self.settingsButton = [self chromeButtonWithSymbol:@"gearshape" action:@selector(showSettings:)];
+  self.settingsButton.toolTip = mz_t(@"Settings");
+  self.settingsButton.accessibilityLabel = self.settingsButton.toolTip;
   self.settingsButton.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
   [self.rootView addSubview:self.settingsButton];
 
@@ -1513,6 +2090,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   NSImageView *searchIcon = [[NSImageView alloc] initWithFrame:NSMakeRect(17, 12, 23, 23)];
   searchIcon.image = mz_symbol_image(@"magnifyingglass", 20.0);
   searchIcon.contentTintColor = mz_text_primary();
+  searchIcon.accessibilityElement = NO;
   [self.searchBox addSubview:searchIcon];
 
   self.searchField = [[NSTextField alloc] initWithFrame:NSZeroRect];
@@ -1542,9 +2120,19 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   // up editable/selectable too.
   self.searchField.cell.editable = YES;
   self.searchField.cell.selectable = YES;
+  self.searchField.accessibilityLabel = mz_t(@"Search Clipboard History");
   [self.searchBox addSubview:self.searchField];
 
-  self.searchHint = [[NSView alloc] initWithFrame:NSZeroRect];
+  // A key cap with a border sits exactly where the clear button appears, and
+  // it was a plain view: it looked pressable and did nothing. What looks like a
+  // button is a button -- this one does what the shortcut it shows does.
+  self.searchHint = [[MZKeyCapButton alloc] initWithFrame:NSZeroRect];
+  self.searchHint.title = @"";
+  self.searchHint.bordered = NO;
+  self.searchHint.target = self;
+  self.searchHint.action = @selector(focusSearchFromHint:);
+  self.searchHint.toolTip = mz_t(@"Search");
+  self.searchHint.accessibilityLabel = self.searchHint.toolTip;
   self.searchHint.wantsLayer = YES;
   self.searchHint.layer.cornerRadius = 5.0;
   self.searchHint.layer.borderWidth = 1.0;
@@ -1557,6 +2145,13 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   searchHintLabel.frame = self.searchHint.bounds;
   searchHintLabel.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
   [self.searchHint addSubview:searchHintLabel];
+
+  self.searchClearButton = [self chromeButtonWithSymbol:@"xmark.circle.fill" action:@selector(clearSearch:)];
+  self.searchClearButton.image = mz_symbol_image(@"xmark.circle.fill", 17.0);
+  self.searchClearButton.toolTip = mz_t(@"Clear Search");
+  self.searchClearButton.accessibilityLabel = self.searchClearButton.toolTip;
+  self.searchClearButton.hidden = YES;
+  [self.searchBox addSubview:self.searchClearButton];
 
   self.tabsCard = [[NSView alloc] initWithFrame:NSZeroRect];
   self.tabsCard.wantsLayer = YES;
@@ -1626,9 +2221,29 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
                                              name:NSViewBoundsDidChangeNotification
                                            object:self.listScrollView.contentView];
 
+  self.emptyStateView = [[NSView alloc] initWithFrame:NSZeroRect];
+  self.emptyStateView.hidden = YES;
+  [self.listCard addSubview:self.emptyStateView];
+
+  self.emptyStateTitleLabel = mz_label(@"", [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold], mz_text_primary());
+  self.emptyStateTitleLabel.alignment = NSTextAlignmentCenter;
+  [self.emptyStateView addSubview:self.emptyStateTitleLabel];
+
+  self.emptyStateBodyLabel = mz_label(@"", [NSFont systemFontOfSize:13 weight:NSFontWeightRegular], mz_text_secondary());
+  self.emptyStateBodyLabel.alignment = NSTextAlignmentCenter;
+  self.emptyStateBodyLabel.maximumNumberOfLines = 2;
+  self.emptyStateBodyLabel.lineBreakMode = NSLineBreakByWordWrapping;
+  [self.emptyStateView addSubview:self.emptyStateBodyLabel];
+
+  self.emptyStateActionButton = [NSButton buttonWithTitle:@"" target:self action:@selector(performEmptyStateAction:)];
+  self.emptyStateActionButton.bezelStyle = NSBezelStyleRounded;
+  self.emptyStateActionButton.focusRingType = NSFocusRingTypeDefault;
+  [self.emptyStateView addSubview:self.emptyStateActionButton];
+
   NSImageView *countIcon = [[NSImageView alloc] initWithFrame:NSMakeRect(outerMargin + contentInset, 25.5, 18, 18)];
   countIcon.image = mz_symbol_image(@"checkmark.circle", 16.0);
   countIcon.contentTintColor = mz_primary_orange_shadow();
+  countIcon.accessibilityElement = NO;
   [self.rootView addSubview:countIcon];
 
   self.countLabel = mz_label(@"0 items", [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold], mz_text_secondary());
@@ -1636,23 +2251,17 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   mz_center_text_field_vertically(self.countLabel);
   [self.rootView addSubview:self.countLabel];
 
-  self.clearButton = [self footerTextButtonWithTitle:mz_t(@"Clear All") action:@selector(clearAll:)];
-  self.clearButton.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
-  [self.rootView addSubview:self.clearButton];
+  self.jevBadge = mz_label(@"", [NSFont systemFontOfSize:12 weight:NSFontWeightMedium], mz_primary_orange_shadow());
+  self.jevBadge.alignment = NSTextAlignmentRight;
+  self.jevBadge.lineBreakMode = NSLineBreakByTruncatingTail;
+  self.jevBadge.hidden = YES;
+  mz_center_text_field_vertically(self.jevBadge);
+  [self.rootView addSubview:self.jevBadge];
 
-  self.clearHint = [[NSView alloc] initWithFrame:NSZeroRect];
-  self.clearHint.wantsLayer = YES;
-  self.clearHint.layer.cornerRadius = 5.0;
-  self.clearHint.layer.borderWidth = 1.0;
-  self.clearHint.layer.borderColor = mz_card_border().CGColor;
-  self.clearHint.layer.backgroundColor = mz_color(28, 31, 35, 1.0).CGColor;
-  self.clearHint.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
-  [self.rootView addSubview:self.clearHint];
-
-  MZShortcutHintView *clearHintLabel = [[MZShortcutHintView alloc] initWithShortcut:@"⌘K"];
-  clearHintLabel.frame = self.clearHint.bounds;
-  clearHintLabel.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-  [self.clearHint addSubview:clearHintLabel];
+  self.footerActionsButton = [self footerTextButtonWithTitle:mz_t(@"Actions…") action:@selector(showHeaderMenu:)];
+  self.footerActionsButton.accessibilityLabel = mz_t(@"Actions");
+  self.footerActionsButton.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
+  [self.rootView addSubview:self.footerActionsButton];
 
   // Suppress unused-variable warnings for layout constants only consumed by
   // -relayoutPanelChrome below — keeping them named here documents intent.
@@ -1669,92 +2278,52 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   // Icons mirror the reference design: outlined SF Symbols rendered as templates so
   // they pick up the menu's foreground color and stay aligned with the title text.
   NSArray<NSDictionary *> *menu_specs = @[
-    @{@"title": mz_t(@"Toggle Favorite"), @"selector": NSStringFromSelector(@selector(toggleSelectedFavorite:)), @"symbol": @"star"},
-    @{@"title": mz_t(@"Paste as Plain Text"), @"selector": NSStringFromSelector(@selector(pasteSelectedAsPlainText:)), @"symbol": @"doc.on.doc"},
-    @{@"title": mz_t(@"Reveal"), @"selector": NSStringFromSelector(@selector(revealSelected:)), @"symbol": @"magnifyingglass"},
+    @{@"title": mz_t(@"Toggle Favorite"), @"selector": NSStringFromSelector(@selector(toggleSelectedFavorite:)), @"symbol": @"star", @"key": @"p", @"modifiers": @(NSEventModifierFlagCommand)},
+    @{@"title": mz_t(@"Paste as Plain Text"), @"selector": NSStringFromSelector(@selector(pasteSelectedAsPlainText:)), @"symbol": @"doc.on.doc", @"key": @"v", @"modifiers": @(NSEventModifierFlagCommand | NSEventModifierFlagOption)},
+    @{@"title": mz_t(@"Reveal"), @"selector": NSStringFromSelector(@selector(revealSelected:)), @"symbol": @"magnifyingglass", @"key": @"r", @"modifiers": @(NSEventModifierFlagCommand)},
   ];
   for (NSDictionary *spec in menu_specs) {
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:spec[@"title"] action:NSSelectorFromString(spec[@"selector"]) keyEquivalent:@""];
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:spec[@"title"] action:NSSelectorFromString(spec[@"selector"]) keyEquivalent:spec[@"key"]];
     item.target = self;
     item.image = mz_menu_symbol_image(spec[@"symbol"]);
+    item.keyEquivalentModifierMask = [spec[@"modifiers"] unsignedIntegerValue];
     [self.actionsMenu addItem:item];
   }
   [self.actionsMenu addItem:[NSMenuItem separatorItem]];
-  for (NSDictionary *spec in @[
-         @{@"title": mz_t(@"Clear Unpinned"), @"selector": NSStringFromSelector(@selector(clearUnpinned:)), @"symbol": @"trash"},
-         @{@"title": mz_t(@"Clear All"), @"selector": NSStringFromSelector(@selector(clearAll:)), @"symbol": @"trash"},
-       ]) {
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:spec[@"title"] action:NSSelectorFromString(spec[@"selector"]) keyEquivalent:@""];
-    item.target = self;
-    item.image = mz_menu_symbol_image(spec[@"symbol"]);
-    [self.actionsMenu addItem:item];
-  }
-  // Language submenu — toggles between English and 中文 in-place.
-  [self.actionsMenu addItem:[NSMenuItem separatorItem]];
-  NSMenuItem *langRoot = [[NSMenuItem alloc] initWithTitle:mz_t(@"Language") action:NULL keyEquivalent:@""];
-  langRoot.image = mz_menu_symbol_image(@"command");
-  NSMenu *langMenu = [[NSMenu alloc] initWithTitle:@"Language"];
-  NSMenuItem *enItem = [[NSMenuItem alloc] initWithTitle:@"English" action:@selector(switchLanguageToEnglish:) keyEquivalent:@""];
-  enItem.target = self;
-  enItem.state = (gLang == MZLangEnglish) ? NSControlStateValueOn : NSControlStateValueOff;
-  [langMenu addItem:enItem];
-  NSMenuItem *zhItem = [[NSMenuItem alloc] initWithTitle:@"中文" action:@selector(switchLanguageToChinese:) keyEquivalent:@""];
-  zhItem.target = self;
-  zhItem.state = (gLang == MZLangChinese) ? NSControlStateValueOn : NSControlStateValueOff;
-  [langMenu addItem:zhItem];
-  langRoot.submenu = langMenu;
-  [self.actionsMenu addItem:langRoot];
-  self.languageMenuItem = langRoot;
+  NSMenuItem *settings_item = [[NSMenuItem alloc] initWithTitle:mz_t(@"Settings") action:@selector(showSettings:) keyEquivalent:@","];
+  settings_item.target = self;
+  settings_item.image = mz_menu_symbol_image(@"gearshape");
+  settings_item.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+  [self.actionsMenu addItem:settings_item];
 
-  NSMenuItem *historyRoot = [[NSMenuItem alloc] initWithTitle:mz_t(@"History Limit") action:NULL keyEquivalent:@""];
-  historyRoot.image = mz_menu_symbol_image(@"clock.arrow.circlepath");
-  NSMenu *historyMenu = [[NSMenu alloc] initWithTitle:@"History Limit"];
-  for (NSNumber *choice in mz_max_item_choices()) {
-    NSInteger value = choice.integerValue;
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:mz_max_items_title(value) action:@selector(changeHistoryLimit:) keyEquivalent:@""];
-    item.target = self;
-    item.tag = value;
-    item.state = (value == self.maxItemsLimit) ? NSControlStateValueOn : NSControlStateValueOff;
-    [historyMenu addItem:item];
-  }
-  historyRoot.submenu = historyMenu;
-  [self.actionsMenu addItem:historyRoot];
-  self.historyLimitMenuItem = historyRoot;
+  // Jev lives in the Actions menu rather than the Settings window because the
+  // Settings layout is fixed-coordinate; a checkbox here costs no relayout.
+  NSMenuItem *jev_item = [[NSMenuItem alloc] initWithTitle:mz_t(@"Suggest what to paste (Jev)")
+                                                    action:@selector(toggleJevSuggestions:)
+                                             keyEquivalent:@""];
+  jev_item.target = self;
+  jev_item.image = mz_menu_symbol_image(@"sparkles");
+  jev_item.toolTip = mz_t(@"Sends item previews, the focused field and the text on screen around it "
+                           "to TypeSafe. Off by default.");
+  jev_item.state = mz_jev_enabled() ? NSControlStateValueOn : NSControlStateValueOff;
+  self.jevMenuItem = jev_item;
+  [self.actionsMenu addItem:jev_item];
 
-  // Popup hotkey presets. The historical default ⌘⇧V shadows "Paste and
-  // Match Style" system-wide, so users need a first-class way off it.
-  NSMenuItem *hotkeyRoot = [[NSMenuItem alloc] initWithTitle:mz_t(@"Hotkey") action:NULL keyEquivalent:@""];
-  hotkeyRoot.image = mz_menu_symbol_image(@"keyboard");
-  NSMenu *hotkeyMenu = [[NSMenu alloc] initWithTitle:@"Hotkey"];
-  NSArray<NSArray<NSString *> *> *hotkeyPresets = @[
-    @[ @"⌘⇧V", @"cmd-shift-v" ],
-    @[ @"⌃⇧V", @"ctrl-shift-v" ],
-    @[ @"⌥⌘V", @"opt-cmd-v" ],
-    @[ mz_t(@"Disabled"), @"disabled" ],
-  ];
-  for (NSArray<NSString *> *preset in hotkeyPresets) {
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:preset[0] action:@selector(changeHotkeyPreset:) keyEquivalent:@""];
-    item.target = self;
-    item.representedObject = preset[1];
-    [hotkeyMenu addItem:item];
-  }
-  hotkeyRoot.submenu = hotkeyMenu;
-  [self.actionsMenu addItem:hotkeyRoot];
-  self.hotkeyMenuItem = hotkeyRoot;
-  [self updateHotkeyMenu];
+  // Permissions live in Settings now; this slot is for working out why a
+  // suggestion did or did not appear, which is otherwise invisible.
+  NSMenuItem *debug_item = [[NSMenuItem alloc] initWithTitle:mz_t(@"Log Jev Decisions")
+                                                      action:@selector(toggleJevDebug:)
+                                               keyEquivalent:@""];
+  debug_item.target = self;
+  debug_item.image = mz_menu_symbol_image(@"doc.text.magnifyingglass");
+  debug_item.state = mz_jev_debug() ? NSControlStateValueOn : NSControlStateValueOff;
+  self.jevScreenMenuItem = debug_item;
+  [self.actionsMenu addItem:debug_item];
 
-  [self.actionsMenu addItem:[NSMenuItem separatorItem]];
-  NSMenuItem *axItem = [[NSMenuItem alloc]
-      initWithTitle:mz_t(@"Grant Accessibility Permission…")
-             action:@selector(requestAccessibilityPermission:)
-      keyEquivalent:@""];
-  axItem.target = self;
-  axItem.image = mz_menu_symbol_image(@"lock.shield");
-  [self.actionsMenu addItem:axItem];
-
-  NSMenuItem *quit_item = [[NSMenuItem alloc] initWithTitle:@"Quit" action:@selector(quitApplication:) keyEquivalent:@""];
+  NSMenuItem *quit_item = [[NSMenuItem alloc] initWithTitle:mz_t(@"Quit") action:@selector(quitApplication:) keyEquivalent:@"q"];
   quit_item.target = self;
   quit_item.image = mz_menu_symbol_image(@"xmark");
+  quit_item.keyEquivalentModifierMask = NSEventModifierFlagCommand;
   [self.actionsMenu addItem:quit_item];
 
   [self updateWindowPinButton];
@@ -1826,8 +2395,9 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   // hug the top-right corner.
   self.titleMark.frame = NSMakeRect(floor((W - 154.0) * 0.5), H - 60.0, 26.0, 48.0);
   self.appTitleLabel.frame = NSMakeRect(NSMaxX(self.titleMark.frame) + 12.0, H - 50.0, 116.0, 32.0);
-  self.pinButton.frame = NSMakeRect(W - 98.0, H - chromeTop, 28.0, 28.0);
-  self.settingsButton.frame = NSMakeRect(W - 54.0, H - chromeTop, 30.0, 30.0);
+  // Right-align both with the card column (W - outerMargin), not 1pt past it.
+  self.settingsButton.frame = NSMakeRect(W - outerMargin - 30.0, H - chromeTop, 30.0, 30.0);
+  self.pinButton.frame = NSMakeRect(W - outerMargin - 30.0 - 14.0 - 28.0, H - chromeTop + 1.0, 28.0, 28.0);
 
   // Search row — full width minus side margins.
   CGFloat searchY = H - 123.0;
@@ -1835,6 +2405,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   CGFloat searchInner = self.searchBox.bounds.size.width;
   self.searchField.frame = NSMakeRect(contentTextX, 7.5, MAX(0.0, searchInner - contentTextX - 87.0), 32.0);
   self.searchHint.frame = NSMakeRect(searchInner - 58.0, 9.0, 43.0, 29.0);
+  self.searchClearButton.frame = self.searchHint.frame;
   for (NSView *subview in self.searchHint.subviews) subview.frame = self.searchHint.bounds;
 
   // Filter row — tabsCard takes the leading area, favorites card hugs the
@@ -1868,17 +2439,25 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   CGFloat listHeight = MAX(0.0, listTop - listBottom);
   self.listCard.frame = NSMakeRect(outerMargin, listBottom, W - outerMargin * 2.0, listHeight);
   self.listScrollView.frame = self.listCard.bounds;
+  self.emptyStateView.frame = self.listCard.bounds;
+  CGFloat empty_mid_y = NSMidY(self.emptyStateView.bounds);
+  CGFloat empty_width = MAX(0.0, NSWidth(self.emptyStateView.bounds) - 64.0);
+  self.emptyStateTitleLabel.frame = NSMakeRect(32.0, empty_mid_y + 20.0, empty_width, 24.0);
+  self.emptyStateBodyLabel.frame = NSMakeRect(32.0, empty_mid_y - 28.0, empty_width, 40.0);
+  self.emptyStateActionButton.frame = NSMakeRect(floor((NSWidth(self.emptyStateView.bounds) - 132.0) * 0.5),
+                                                 empty_mid_y - 76.0,
+                                                 132.0,
+                                                 30.0);
 
-  // Footer count anchors bottom-left; the "Clear All" + ⌘K group stays centered.
+  // Footer count anchors bottom-left; the neutral row-actions entry stays centered.
   // (countIcon/countLabel use fixed bottom-left coordinates that don't depend on W.)
-  const CGFloat clearGroupWidth = 108.0 + 15.0 + 48.0;
-  CGFloat clearGroupX = floor((W - clearGroupWidth) * 0.5);
-  self.clearButton.frame = NSMakeRect(clearGroupX, 20.0, 108.0, 29.0);
-  self.clearHint.frame = NSMakeRect(clearGroupX + 123.0, 20.0, 48.0, 29.0);
-  for (NSView *subview in self.clearHint.subviews) subview.frame = self.clearHint.bounds;
+  self.footerActionsButton.frame = NSMakeRect(floor((W - 116.0) * 0.5), 20.0, 116.0, 29.0);
+  CGFloat jevX = NSMaxX(self.footerActionsButton.frame) + 12.0;
+  self.jevBadge.frame = NSMakeRect(jevX, 20.0, MAX(0.0, W - outerMargin - contentInset - jevX), 29.0);
 
   // Reflow visible rows to the list's new width.
   [self relayoutItemViews];
+  [self updateKeyViewLoop];
 }
 
 - (void)windowDidResize:(NSNotification *)notification {
@@ -1893,12 +2472,12 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (NSButton *)chromeButtonWithSymbol:(NSString *)symbol action:(SEL)action {
-  NSButton *button = [[NSButton alloc] initWithFrame:NSZeroRect];
+  NSButton *button = [[MZRowActionButton alloc] initWithFrame:NSZeroRect];
   button.title = @"";
   button.bordered = NO;
   button.image = mz_symbol_image(symbol, 20.0);
   button.contentTintColor = mz_text_primary();
-  button.focusRingType = NSFocusRingTypeNone;
+  button.focusRingType = NSFocusRingTypeDefault;
   button.target = self;
   button.action = action;
   return button;
@@ -1910,7 +2489,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   button.tag = tag;
   button.bordered = NO;
   button.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
-  button.focusRingType = NSFocusRingTypeNone;
+  button.focusRingType = NSFocusRingTypeDefault;
   button.framed = tag == MZFilterModeFavorites;
   button.accentCorner = tag == MZFilterModeAll;
   button.target = self;
@@ -1920,12 +2499,12 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (NSButton *)footerTextButtonWithTitle:(NSString *)title action:(SEL)action {
-  NSButton *button = [[NSButton alloc] initWithFrame:NSZeroRect];
+  NSButton *button = [[MZRowActionButton alloc] initWithFrame:NSZeroRect];
   button.title = title;
   button.bordered = NO;
   button.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
   button.contentTintColor = mz_text_secondary();
-  button.focusRingType = NSFocusRingTypeNone;
+  button.focusRingType = NSFocusRingTypeDefault;
   button.target = self;
   button.action = action;
   return button;
@@ -1946,6 +2525,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 - (void)updateWindowPinButton {
   self.pinButton.image = mz_symbol_image(self.windowPinned ? @"pin.fill" : @"pin", 20.0);
   self.pinButton.contentTintColor = self.windowPinned ? mz_warning_yellow() : mz_text_secondary();
+  self.pinButton.accessibilityValue = @(self.windowPinned);
 }
 
 - (void)show {
@@ -1970,6 +2550,12 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   if (frontmost != nil && frontmost.processIdentifier != current.processIdentifier) {
     self.previousFrontmostApp = frontmost;
   }
+  // This has to happen before the panel takes activation a few lines down:
+  // Chromium-based apps (browsers, Electron) report their real focused field
+  // only while active, and "the whole web page" an instant later. Called on
+  // every show, so an element held from an earlier one is never reused.
+  mz_jev_capture_focus(mz_jev_enabled() && self.previousFrontmostApp != nil
+                           ? self.previousFrontmostApp.processIdentifier : 0);
 
   // Reset interaction state every time the panel is summoned. Users expect a
   // fresh "top of history, ready to type" view -- not whatever row/search was
@@ -1979,11 +2565,13 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     void (*search)(const char *) = self.callbacks.on_search;
     if (search != NULL) dispatch_async(mz_db_queue(), ^{ search(""); });
   }
+  [self updateSearchChrome];
   // Force a visual refresh of the selection even if the controller already had
   // row 0 marked selected (selectRowAtIndex early-returns when nothing changes).
   // Resetting to -1 first guarantees `updateItemViewAtIndex` repaints the cell's
   // selected border every time the panel pops open.
   self.selectedRowIndex = -1;
+  self.userDroveSelection = NO;
   if (self.rows.count > 0) {
     [self selectRowAtIndex:0 focusList:NO];
   }
@@ -1997,6 +2585,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   [self.panel orderFrontRegardless];
   [self.panel makeKeyAndOrderFront:nil];
   [self focusSearchFieldSelectingText:NO];
+  [self moveJevInspectorClearOfPanel];
 
   // makeKeyAndOrderFront restores any scroll position AppKit autosaved, so the
   // pin-to-top reset must happen after the panel is on screen. The async
@@ -2012,11 +2601,145 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   if (toggle != NULL) {
     dispatch_async(mz_db_queue(), ^{ toggle(); });
   }
+
+  // Reading the screen takes ~200ms, and we are about to spend 200ms waiting
+  // for rows anyway, so starting it here costs next to nothing on the clock.
+  if (mz_jev_enabled() && self.previousFrontmostApp != nil) {
+    mz_ocr_begin(self.previousFrontmostApp.processIdentifier);
+  }
+
+  // The refresh above lands through mz_app_set_rows a few milliseconds from
+  // now; asking Jev before that would hand it the previous snapshot.
+  // ponytail: fixed delay, move to a set_rows hook if a slow db makes it miss.
+  [self clearJevSuggestion];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    if (self.panel.isVisible) [self requestJevSuggestion];
+  });
 }
 
 - (void)hide {
+  [self clearJevSuggestion];
   [self.panel orderOut:nil];
   [self restorePreviousFrontmostApp];
+}
+
+// Jev's answer is about the empty destination field, so it stops being
+// relevant the moment the user narrows the list themselves.
+- (void)clearJevSuggestion {
+  mz_jev_cancel();
+  mz_ocr_cancel();
+  self.jevRequestGeneration += 1;
+  // The pick wears an accent of its own now, so it counts as a mark to clear.
+  BOOL had_marks = self.jevRunnerUpRowIDs.count > 0 || self.jevSuggestedRowID != 0;
+  self.jevSuggestedRowID = 0;
+  self.jevSuggestedConfidence = 0.0;
+  self.jevRunnerUpRowIDs = nil;
+  self.jevBadge.stringValue = @"";
+  self.jevBadge.hidden = YES;
+  if (had_marks) [self applyJevRunnerUpMarks];
+}
+
+// Row objects carry the mark so the cell can stay a pure function of its row.
+// Bumping rowsGeneration is what makes the scroll path's reconfigure cache
+// notice the change.
+// The controller's ids are the truth; the flags on MZRow are a cache of them
+// for the cell to read. Row objects are rebuilt from scratch on every refresh
+// (a poll that saw a new copy, a search, a pin), so anything that replaces
+// `allRows` has to stamp the new objects too or the marks silently vanish.
+- (void)stampJevMarksOnRows:(NSArray<MZRow *> *)rows {
+  for (MZRow *row in rows) {
+    row.jevRunnerUp = [self.jevRunnerUpRowIDs containsObject:@(row.rowID)];
+    row.jevPicked = self.jevSuggestedRowID != 0 && row.rowID == self.jevSuggestedRowID;
+    row.jevConfidence = row.jevPicked ? self.jevSuggestedConfidence : 0.0;
+  }
+}
+
+- (void)applyJevRunnerUpMarks {
+  [self stampJevMarksOnRows:self.allRows];
+  self.rowsGeneration += 1;
+  [self reloadItemViews];
+}
+
+- (void)requestJevSuggestion {
+  [self clearJevSuggestion];
+  if (!mz_jev_enabled()) return;
+  // A suggestion that arrives after the user has already made their own choice
+  // is not help, it is theft of the selection.
+  if (self.userDroveSelection) return;
+
+  // Only the entries the user can actually see are candidates, capped so a
+  // 500-item history does not turn into a 500-option question.
+  // ponytail: flat cap, rank candidates first if the top 12 miss too often.
+  NSUInteger count = MIN(self.rows.count, (NSUInteger)12);
+  if (count < 2) return;
+  NSArray<MZRow *> *snapshot = [self.rows subarrayWithRange:NSMakeRange(0, count)];
+  NSString *destination = self.previousFrontmostApp.bundleIdentifier ?: @"";
+  pid_t target = self.previousFrontmostApp != nil ? self.previousFrontmostApp.processIdentifier : 0;
+  NSUInteger generation = ++self.jevRequestGeneration;
+
+  // The paste log lives in SQLite, and the db queue may be busy hashing a
+  // multi-megabyte capture, so read it there and come back rather than
+  // stalling the panel that is already on screen.
+  dispatch_async(mz_db_queue(), ^{
+    int64_t *ids = calloc(count, sizeof(int64_t));
+    MZPasteSignals *pastes = calloc(count, sizeof(MZPasteSignals));
+    if (ids == NULL || pastes == NULL) { free(ids); free(pastes); return; }
+    for (NSUInteger i = 0; i < count; i++) ids[i] = snapshot[i].rowID;
+    mz_app_paste_signals(destination.UTF8String, ids, count, pastes);
+    free(ids);
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (generation != self.jevRequestGeneration || !self.panel.isVisible || self.userDroveSelection) {
+        free(pastes);
+        return;
+      }
+      MZJevCandidate *candidates = calloc(count, sizeof(MZJevCandidate));
+      if (candidates == NULL) { free(pastes); return; }
+      for (NSUInteger i = 0; i < count; i++) {
+        MZRow *row = snapshot[i];
+        candidates[i].row_id = row.rowID;
+        candidates[i].preview = row.title.UTF8String;
+        candidates[i].source_app = row.app.UTF8String;
+        candidates[i].content_kind = (int)row.contentKind;
+        candidates[i].copied_at = row.copiedAt;
+        candidates[i].copy_count = (int)row.copyCount;
+        candidates[i].pinned = row.pinned ? 1 : 0;
+        candidates[i].source_context = row.sourceContext.UTF8String;
+        candidates[i].pastes_into_destination = pastes[i].pastes_into_destination;
+        candidates[i].pasted_here_recently = pastes[i].pasted_here_recently;
+        candidates[i].sibling_pasted_here_recently = pastes[i].sibling_pasted_here_recently;
+      }
+      // mz_jev_suggest copies everything it needs before it returns, so the
+      // candidate array and its autoreleased UTF-8 buffers can go now.
+      mz_jev_suggest(target, candidates, count,
+                     ^(int64_t rowID, double confidence, NSArray<NSNumber *> *runnerUps, NSString *status) {
+        if (!self.panel.isVisible || generation != self.jevRequestGeneration) return;
+        // Between the request going out and the answer coming back the user
+        // may have started choosing for themselves. They win.
+        if (self.userDroveSelection) return;
+        // The panel only ever shows a pick. Setup and service problems
+        // (no key, timeout, rejected key) belong to Settings, which already
+        // reports them; repeating them here nags on every open.
+        (void)status;
+        if (rowID <= 0) return;
+        NSInteger index = [self indexOfRowID:rowID inRows:self.rows];
+        if (index < 0) return;
+        self.jevSuggestedRowID = rowID;
+        self.jevSuggestedConfidence = confidence;
+        self.jevRunnerUpRowIDs = [NSSet setWithArray:runnerUps ?: @[]];
+        [self applyJevRunnerUpMarks];
+        [self selectRowAtIndex:index focusList:NO];
+        // selectRowAtIndex is also the user's path, so clear the flag it set.
+        self.userDroveSelection = NO;
+        self.jevBadge.textColor = mz_primary_orange_shadow();
+        self.jevBadge.stringValue = [NSString stringWithFormat:@"✦ %@ · %.0f%%", mz_t(@"Jev picked"), confidence * 100.0];
+        self.jevBadge.hidden = NO;
+      });
+      free(candidates);
+      free(pastes);
+    });
+  });
 }
 
 - (void)restorePreviousFrontmostApp {
@@ -2199,6 +2922,9 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 
 - (void)listScrollViewDidScroll:(NSNotification *)notification {
   (void)notification;
+  // A popover is anchored to a row that is now moving; recycling only clears
+  // the cells that scrolled off, so the rest would keep a stranded bubble.
+  for (MZClipboardCellView *view in self.itemViews) [view dismissImagePreview];
   [self updateVisibleItemViews];
 }
 
@@ -2301,6 +3027,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)moveSelectionByDelta:(NSInteger)delta focusList:(BOOL)focusList {
+  self.userDroveSelection = YES;
   if (self.rows.count == 0) return;
   NSInteger selected = self.selectedRowIndex;
   if (selected < 0) selected = 0;
@@ -2308,12 +3035,14 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)moveSelectionByPageDelta:(NSInteger)delta focusList:(BOOL)focusList {
+  self.userDroveSelection = YES;
   if (self.rows.count == 0) return;
   NSInteger step = MAX(1, (NSInteger)floor(self.listScrollView.contentView.bounds.size.height / 74.0) - 1);
   [self moveSelectionByDelta:delta * step focusList:focusList];
 }
 
 - (void)moveSelectionToBoundary:(BOOL)toEnd focusList:(BOOL)focusList {
+  self.userDroveSelection = YES;
   if (self.rows.count == 0) return;
   [self selectRowAtIndex:(toEnd ? (NSInteger)self.rows.count - 1 : 0) focusList:focusList];
 }
@@ -2362,6 +3091,9 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
       ((MZChamferedButton *)button).active = active;
     }
     button.contentTintColor = active ? NSColor.whiteColor : mz_text_primary();
+    button.state = active ? NSControlStateValueOn : NSControlStateValueOff;
+    button.accessibilityLabel = button.title;
+    button.accessibilityValue = @(active);
   }
 
   [self updateWindowPinButton];
@@ -2385,6 +3117,8 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   NSUInteger count = self.rows.count;
   NSString *unit = mz_t(count == 1 ? @"item" : @"items");
   self.countLabel.stringValue = [NSString stringWithFormat:@"%lu %@", (unsigned long)count, unit];
+  self.countLabel.accessibilityLabel = self.countLabel.stringValue;
+  [self updateEmptyState];
 }
 
 - (NSComparisonResult)compareRow:(MZRow *)lhs withRow:(MZRow *)rhs {
@@ -2437,6 +3171,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)selectRowForItemView:(MZClipboardCellView *)sender {
+  self.userDroveSelection = YES;
   MZRow *row = [sender.objectValue isKindOfClass:[MZRow class]] ? sender.objectValue : nil;
   if (row == nil) return;
   mz_debug_log(@"selectRowForItemView rowID=%lld title=%@", row.rowID, row.title);
@@ -2445,6 +3180,16 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 
 - (void)showMenuFromView:(NSView *)view {
   if (view == nil) return;
+  MZRow *selected = [self selectedItem];
+  for (NSMenuItem *item in self.actionsMenu.itemArray) {
+    if (item.action == @selector(toggleSelectedFavorite:) ||
+        item.action == @selector(pasteSelectedAsPlainText:)) {
+      item.enabled = selected != nil;
+    }
+    if (item.action == @selector(revealSelected:)) {
+      item.enabled = selected != nil && [self rowSupportsReveal:selected];
+    }
+  }
   [self.actionsMenu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, NSHeight(view.bounds)) inView:view];
 }
 
@@ -2482,6 +3227,13 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 - (void)togglePinFromButton:(MZRowActionButton *)sender {
   [self selectRowID:sender.rowID];
   [self performRowAction:MZ_APP_ACTION_TOGGLE_PIN rowID:sender.rowID hidesPanel:NO];
+}
+
+- (void)selectRowFromButton:(MZRowActionButton *)sender {
+  [self selectRowID:sender.rowID];
+  if (NSApp.currentEvent.clickCount >= 2) {
+    [self performRowAction:MZ_APP_ACTION_PASTE rowID:sender.rowID hidesPanel:YES];
+  }
 }
 
 - (void)pasteRow:(MZRowActionButton *)sender {
@@ -2533,23 +3285,710 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   mz_app_dispatch_action(self, MZ_APP_ACTION_QUIT, 0);
 }
 
+// The menu item and the Settings switch are two views of one flag; whichever
+// the user touched, both end up here.
+- (void)applyJevEnabled:(BOOL)enabled {
+  mz_jev_set_enabled(enabled);
+  if (enabled) mz_ocr_prewarm();
+  self.jevMenuItem.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
+  self.settingsJevSwitch.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
+  [self updateJevSettingsStatus];
+  // Switching this on is a request for the feature, not for a checkbox. Take
+  // the user straight to whatever is still missing instead of leaving them to
+  // discover later that nothing ever appears.
+  if (enabled) {
+    NSString *unused = nil;
+    SEL fix = [self jevBlockerFix:&unused];
+    if (fix != NULL) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+      [self performSelector:fix withObject:nil];
+#pragma clang diagnostic pop
+    }
+  }
+  if (enabled && self.panel.isVisible) {
+    [self requestJevSuggestion];
+  } else {
+    [self clearJevSuggestion];
+  }
+}
+
+- (void)toggleJevDebug:(id)sender {
+  (void)sender;
+  if (self.inspectorWindow.isVisible) {
+    [self.inspectorWindow orderOut:nil];
+    mz_jev_set_debug(NO);
+    self.jevScreenMenuItem.state = NSControlStateValueOff;
+    [self syncClickTrace];
+    return;
+  }
+  mz_jev_set_debug(YES);
+  self.jevScreenMenuItem.state = NSControlStateValueOn;
+  [self syncClickTrace];
+  [self showJevInspector];
+}
+
+// A live window rather than a log file: the question being answered is always
+// "what just happened", and a file you have to go and open answers it too late.
+- (void)buildJevInspector {
+  if (self.inspectorWindow != nil) return;
+  const CGFloat width = 720.0, height = 620.0, imageHeight = 220.0, captionHeight = 20.0;
+  self.inspectorWindow = [[NSWindow alloc]
+      initWithContentRect:NSMakeRect(0, 0, width, height)
+                styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable)
+                  backing:NSBackingStoreBuffered
+                    defer:NO];
+  self.inspectorWindow.title = mz_t(@"Jev Inspector");
+  self.inspectorWindow.releasedWhenClosed = NO;
+  self.inspectorWindow.minSize = NSMakeSize(520, 360);
+
+  NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, height)];
+  root.wantsLayer = YES;
+  root.layer.backgroundColor = mz_panel_fill().CGColor;
+  self.inspectorWindow.contentView = root;
+
+  // What the screen reader actually saw, when it ran at all.
+  self.inspectorImage = [[NSImageView alloc] initWithFrame:
+      NSMakeRect(12, height - imageHeight - 12, width - 24, imageHeight)];
+  self.inspectorImage.imageScaling = NSImageScaleProportionallyUpOrDown;
+  self.inspectorImage.imageAlignment = NSImageAlignTop;
+  self.inspectorImage.wantsLayer = YES;
+  self.inspectorImage.layer.backgroundColor = mz_card_fill().CGColor;
+  self.inspectorImage.layer.cornerRadius = 8.0;
+  self.inspectorImage.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+  [root addSubview:self.inspectorImage];
+
+  self.inspectorCaption = mz_label(@"", [NSFont systemFontOfSize:11], mz_text_muted());
+  self.inspectorCaption.frame = NSMakeRect(12, height - imageHeight - 12 - captionHeight, width - 24, captionHeight);
+  self.inspectorCaption.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+  [root addSubview:self.inspectorCaption];
+
+  NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:
+      NSMakeRect(12, 12, width - 24, height - imageHeight - captionHeight - 36)];
+  scroll.hasVerticalScroller = YES;
+  scroll.autohidesScrollers = NO;
+  scroll.drawsBackground = YES;
+  scroll.backgroundColor = mz_card_fill();
+  scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  scroll.borderType = NSNoBorder;
+
+  self.inspectorText = [[NSTextView alloc] initWithFrame:scroll.contentView.bounds];
+  self.inspectorText.editable = NO;
+  self.inspectorText.drawsBackground = NO;
+  self.inspectorText.textColor = mz_text_primary();
+  self.inspectorText.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+  self.inspectorText.textContainerInset = NSMakeSize(8, 8);
+  self.inspectorText.verticallyResizable = YES;
+  self.inspectorText.horizontallyResizable = NO;
+  self.inspectorText.autoresizingMask = NSViewWidthSizable;
+  self.inspectorText.textContainer.widthTracksTextView = YES;
+  scroll.documentView = self.inspectorText;
+  [root addSubview:scroll];
+
+  [NSNotificationCenter.defaultCenter addObserver:self
+                                         selector:@selector(refreshJevInspector)
+                                             name:kMZJevLogChangedNotification
+                                           object:nil];
+}
+
+- (void)showJevInspector {
+  [self buildJevInspector];
+  mz_jev_log(@"=== inspector opened; open the panel over an app to trace a suggestion ===");
+  [self refreshJevInspector];
+  [NSApp activateIgnoringOtherApps:YES];
+  if (!self.inspectorWindow.isVisible) [self.inspectorWindow center];
+  [self.inspectorWindow makeKeyAndOrderFront:nil];
+  [self moveJevInspectorClearOfPanel];
+}
+
+// The panel opens centred, and the inspector opens centred, so the one window
+// that shows what just happened was hidden by the thing that made it happen.
+// Park it alongside whenever they would overlap, and leave it alone when the
+// user has already moved it somewhere clear.
+- (void)moveJevInspectorClearOfPanel {
+  if (!self.inspectorWindow.isVisible || !self.panel.isVisible) return;
+  NSRect screen = (self.panel.screen ?: NSScreen.mainScreen).visibleFrame;
+  NSRect placed = mz_jev_inspector_frame(self.inspectorWindow.frame, self.panel.frame, screen);
+  if (NSEqualRects(placed, self.inspectorWindow.frame)) return;
+  [self.inspectorWindow setFrame:placed display:YES];
+  // Behind the panel in the ordering, but no longer under it.
+  [self.inspectorWindow orderFront:nil];
+}
+
+- (void)refreshJevInspector {
+  if (self.inspectorText == nil) return;
+  NSArray<NSString *> *lines = mz_jev_log_lines();
+  self.inspectorText.string = lines.count > 0
+      ? [lines componentsJoinedByString:@"\n"]
+      : mz_t(@"Nothing traced yet. Open the clipboard panel over another app.");
+  // Follow the tail: the newest line is the one being read.
+  [self.inspectorText scrollRangeToVisible:NSMakeRange(self.inspectorText.string.length, 0)];
+
+  CGImageRef capture = mz_ocr_copy_last_capture();
+  if (capture != NULL) {
+    NSSize size = NSMakeSize(CGImageGetWidth(capture), CGImageGetHeight(capture));
+    self.inspectorImage.image = [[NSImage alloc] initWithCGImage:capture size:size];
+    self.inspectorCaption.stringValue = [NSString stringWithFormat:
+        mz_t(@"Last screen read: %.0f×%.0f px"), size.width, size.height];
+    CGImageRelease(capture);
+  } else {
+    self.inspectorImage.image = nil;
+    self.inspectorCaption.stringValue = mz_t(@"No screen read yet — apps that report a text field never need one.");
+  }
+}
+
+- (void)requestScreenReadingPermission:(id)sender {
+  (void)sender;
+  if (mz_ocr_permitted()) {
+    mz_open_privacy_pane(@"Privacy_ScreenCapture");
+    return;
+  }
+  // Registers the app in the Screen Recording list and shows the system
+  // prompt. macOS only applies the grant after a relaunch, so say so.
+  mz_ocr_request_permission();
+  NSAlert *alert = [[NSAlert alloc] init];
+  alert.messageText = mz_t(@"Allow screen reading");
+  alert.informativeText =
+      mz_t(@"Enable MaccyZig under Privacy & Security → Screen Recording, then quit and reopen "
+            "MaccyZig. Each time the panel opens, Jev will then read the part of the window just "
+            "above where you paste — never the whole screen.");
+  [alert addButtonWithTitle:mz_t(@"Open Settings")];
+  [alert addButtonWithTitle:mz_t(@"Cancel")];
+  [NSApp activateIgnoringOtherApps:YES];
+  if ([alert runModal] == NSAlertFirstButtonReturn) mz_open_privacy_pane(@"Privacy_ScreenCapture");
+  [self updateJevSettingsStatus];
+}
+
+- (void)toggleJevSuggestions:(id)sender {
+  (void)sender;
+  [self applyJevEnabled:!mz_jev_enabled()];
+}
+
+- (void)changeJevEnabledFromSettings:(NSSwitch *)sender {
+  BOOL enabled = sender.state == NSControlStateValueOn;
+  [self applyJevEnabled:enabled];
+  // Switching on without a key leaves one obvious next step; put the caret there.
+  if (enabled && mz_jev_api_key() == nil) {
+    [self.settingsWindow makeFirstResponder:self.settingsJevKeyField];
+  }
+}
+
+// Says what the feature will actually do right now, so an enabled switch with
+// no key does not look like a working setup.
+// Everything Jev needs before it can say anything, in the order the user
+// should deal with them. Returns the selector to run to fix the first gap, or
+// NULL when there is none, so the switch and the status line never disagree
+// about whether this feature can actually work.
+- (SEL)jevBlockerFix:(NSString **)message_out {
+  if (mz_jev_api_key() == nil) {
+    *message_out = @"Needs a TypeSafe API key below.";
+    return @selector(focusJevKeyField);
+  }
+  if (mz_ax_is_trusted(0) == 0) {
+    *message_out = @"Needs Accessibility to see what you are pasting into.";
+    return @selector(requestAccessibilityPermission:);
+  }
+  if (!mz_ocr_permitted()) {
+    *message_out = @"Needs Screen Recording to read the screen just above where you paste.";
+    return @selector(requestScreenReadingPermission:);
+  }
+  *message_out = nil;
+  return NULL;
+}
+
+- (void)focusJevKeyField {
+  [self.settingsWindow makeFirstResponder:self.settingsJevKeyField];
+}
+
+// A permission row says what is true right now. Missing: a warning and the
+// one prominent button that fixes it. Granted: a plain statement and an
+// ordinary button that opens the system pane where it can be revoked. Both
+// rows go through here so they cannot drift apart again -- the Accessibility
+// row used to be a fixed orange "Grant Permission…" whatever the real state.
+- (void)showPermission:(BOOL)granted
+                  note:(NSTextField *)note
+               centerY:(CGFloat)center_y
+                button:(MZChamferedButton *)button
+                  text:(NSArray<NSString *> *)text {
+  if (note == nil) return;
+  note.stringValue = mz_t(text[granted ? 0 : 1]);
+  note.textColor = granted ? mz_text_secondary() : mz_warning_yellow();
+  CGFloat height = ceil([note.cell cellSizeForBounds:NSMakeRect(0, 0, 222, CGFLOAT_MAX)].height);
+  note.frame = NSMakeRect(16, center_y - height * 0.5, 222, height);
+  button.title = mz_t(text[granted ? 2 : 3]);
+  button.active = !granted;
+}
+
+- (void)updatePermissionRows {
+  [self showPermission:mz_ax_is_trusted(0) != 0
+                  note:self.settingsAccessNote
+               centerY:108.0
+                button:self.settingsAccessButton
+                  text:@[ @"Allowed. MaccyZig pastes straight into the app you were using.",
+                          @"Direct paste requires Accessibility permission.",
+                          @"Open Accessibility…", @"Grant Permission…" ]];
+  [self showPermission:mz_ocr_permitted()
+                  note:self.settingsScreenNote
+               centerY:36.0
+                button:self.settingsScreenButton
+                  text:@[ @"Allowed. Jev reads the screen just above where you paste.",
+                          @"Lets Jev read the screen just above where you paste.",
+                          @"Open Screen Recording…", @"Allow Screen Reading…" ]];
+}
+
+// The person may have been away in System Settings changing exactly what
+// these rows describe.
+- (void)windowDidBecomeKey:(NSNotification *)notification {
+  if (notification.object == self.settingsWindow) [self updateJevSettingsStatus];
+}
+
+- (void)updateJevSettingsStatus {
+  [self updatePermissionRows];
+  if (self.settingsJevStatus == nil) return;
+  if (!mz_jev_enabled()) {
+    self.settingsJevStatus.textColor = mz_text_muted();
+    self.settingsJevStatus.stringValue = mz_t(@"Off — nothing leaves this Mac.");
+    return;
+  }
+  NSString *blocker = nil;
+  if ([self jevBlockerFix:&blocker] != NULL) {
+    self.settingsJevStatus.textColor = mz_warning_yellow();
+    self.settingsJevStatus.stringValue = mz_t(blocker);
+    return;
+  }
+  self.settingsJevStatus.textColor = mz_text_secondary();
+  self.settingsJevStatus.stringValue =
+      mz_t(@"On — sends previews, the field and the screen around it. Never credentials.");
+}
+
+- (void)setJevStatus:(NSString *)message color:(NSColor *)color {
+  self.settingsJevStatus.textColor = color;
+  self.settingsJevStatus.stringValue = mz_t(message);
+}
+
+- (void)saveJevKeyFromSettings:(id)sender {
+  (void)sender;
+  if (!self.settingsJevSave.enabled) return;  // a check is already in flight
+  NSString *entered = [self.settingsJevKeyField.stringValue
+      stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (entered.length == 0) {
+    // Never treat an empty submit as "delete the key": Return, a VoiceOver
+    // confirm or a stray click on an empty field would silently destroy a
+    // working credential.
+    [self setJevStatus:@"Enter an API key first" color:mz_warning_yellow()];
+    [self.settingsWindow makeFirstResponder:self.settingsJevKeyField];
+    return;
+  }
+
+  // Verify before storing: a rejected key must never become the stored one,
+  // or the next open would report "On" for a setup that cannot work.
+  self.settingsJevSave.enabled = NO;
+  self.settingsJevKeyField.enabled = NO;
+  [self setJevStatus:@"Checking the key…" color:mz_text_secondary()];
+
+  mz_jev_verify_api_key(entered, ^(BOOL ok, NSString *message) {
+    self.settingsJevSave.enabled = YES;
+    self.settingsJevKeyField.enabled = YES;
+    if (!ok) {
+      // Keep the typed key so a typo can be fixed in place.
+      [self setJevStatus:message color:mz_warning_yellow()];
+      [self.settingsWindow makeFirstResponder:self.settingsJevKeyField];
+      return;
+    }
+    if (!mz_jev_set_api_key(entered)) {
+      [self setJevStatus:@"The keychain refused to store the key" color:mz_warning_yellow()];
+      return;
+    }
+    // Clear the field: the key is in the keychain now, and leaving it on
+    // screen is the one place it could still be read off a shared display.
+    self.settingsJevKeyField.stringValue = @"";
+    self.settingsJevKeyField.placeholderString = @"••••••••••••";
+    // A key the user just proved works is almost always meant to be used.
+    [self applyJevEnabled:YES];
+    [self setJevStatus:@"API key works — suggestions are on." color:mz_text_secondary()];
+  });
+}
+
+static void mz_open_privacy_pane(NSString *anchor) {
+  NSURL *url = [NSURL URLWithString:[@"x-apple.systempreferences:com.apple.preference.security?"
+                                        stringByAppendingString:anchor]];
+  if (url != nil) [NSWorkspace.sharedWorkspace openURL:url];
+}
+
 - (void)requestAccessibilityPermission:(id)sender {
   (void)sender;
+  if (mz_ax_is_trusted(0) != 0) {
+    mz_open_privacy_pane(@"Privacy_Accessibility");
+    return;
+  }
   mz_app_show_accessibility_alert();
 }
 
-- (void)switchLanguageToEnglish:(id)sender {
-  (void)sender;
-  mz_lang_set(MZLangEnglish);
+- (void)buildSettingsWindow {
+  if (self.settingsWindow != nil) return;
+
+  const CGFloat width = 520.0;
+  // Sections are laid out bottom-up in fixed coordinates.
+  const CGFloat height = 814.0;
+  self.settingsWindow = [[MZSettingsWindow alloc]
+      initWithContentRect:NSMakeRect(0, 0, width, height)
+                styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskFullSizeContentView
+                  backing:NSBackingStoreBuffered
+                    defer:NO];
+  self.settingsWindow.title = mz_t(@"Settings");
+  self.settingsWindow.titleVisibility = NSWindowTitleHidden;
+  self.settingsWindow.titlebarAppearsTransparent = YES;
+  self.settingsWindow.movableByWindowBackground = YES;
+  self.settingsWindow.backgroundColor = NSColor.clearColor;
+  self.settingsWindow.opaque = NO;
+  self.settingsWindow.hasShadow = YES;
+  self.settingsWindow.releasedWhenClosed = NO;
+
+  NSButton *native_close = [self.settingsWindow standardWindowButton:NSWindowCloseButton];
+  NSButton *native_mini = [self.settingsWindow standardWindowButton:NSWindowMiniaturizeButton];
+  NSButton *native_zoom = [self.settingsWindow standardWindowButton:NSWindowZoomButton];
+  native_close.hidden = YES;
+  native_mini.hidden = YES;
+  native_zoom.hidden = YES;
+
+  NSView *content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, height)];
+  content.wantsLayer = YES;
+  content.layer.cornerRadius = 18.0;
+  content.layer.masksToBounds = YES;
+  content.layer.backgroundColor = mz_panel_fill().CGColor;
+  content.layer.borderWidth = 1.0;
+  content.layer.borderColor = mz_panel_border().CGColor;
+  self.settingsWindow.contentView = content;
+
+  NSImageView *mark = [[NSImageView alloc] initWithFrame:NSMakeRect(190, 760, 22, 40)];
+  mark.image = mz_resource_image(@"logo-mark", @"png");
+  mark.imageScaling = NSImageScaleProportionallyUpOrDown;
+  mark.accessibilityElement = NO;
+  [content addSubview:mark];
+
+  NSTextField *title = mz_label(mz_t(@"Settings"), [NSFont systemFontOfSize:22 weight:NSFontWeightBold], mz_text_primary());
+  title.frame = NSMakeRect(222, 766, 138, 29);
+  title.accessibilityLabel = mz_t(@"Settings");
+  [content addSubview:title];
+
+  NSButton *close = [self chromeButtonWithSymbol:@"xmark" action:@selector(closeSettings:)];
+  close.frame = NSMakeRect(width - 52, 764, 30, 30);
+  close.toolTip = mz_t(@"Close");
+  close.accessibilityLabel = close.toolTip;
+  [content addSubview:close];
+
+  NSTextField *general = mz_label(mz_t(@"General"), [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], mz_text_secondary());
+  general.frame = NSMakeRect(28, 713, 464, 20);
+  [content addSubview:general];
+
+  NSView *general_card = [[NSView alloc] initWithFrame:NSMakeRect(24, 639, 472, 64)];
+  general_card.wantsLayer = YES;
+  general_card.layer.cornerRadius = 10.0;
+  general_card.layer.backgroundColor = mz_card_fill().CGColor;
+  general_card.layer.borderWidth = 1.0;
+  general_card.layer.borderColor = mz_card_border().CGColor;
+  [content addSubview:general_card];
+
+  NSTextField *language = mz_label(mz_t(@"Language"), [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], mz_text_primary());
+  language.frame = NSMakeRect(16, 21, 146, 22);
+  [general_card addSubview:language];
+
+  self.settingsLanguageButton = [[MZSettingsChoiceButton alloc] initWithFrame:NSMakeRect(184, 10, 272, 44)];
+  self.settingsLanguageButton.target = self;
+  self.settingsLanguageButton.action = @selector(showLanguageChoices:);
+  self.settingsLanguageButton.accessibilityLabel = mz_t(@"Language");
+  [general_card addSubview:self.settingsLanguageButton];
+
+  NSTextField *history = mz_label(mz_t(@"History"), [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], mz_text_secondary());
+  history.frame = NSMakeRect(28, 605, 464, 20);
+  [content addSubview:history];
+
+  NSView *history_card = [[NSView alloc] initWithFrame:NSMakeRect(24, 454, 472, 140)];
+  history_card.wantsLayer = YES;
+  history_card.layer.cornerRadius = 10.0;
+  history_card.layer.backgroundColor = mz_card_fill().CGColor;
+  history_card.layer.borderWidth = 1.0;
+  history_card.layer.borderColor = mz_card_border().CGColor;
+  [content addSubview:history_card];
+
+  NSTextField *history_limit = mz_label(mz_t(@"History Limit"), [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], mz_text_primary());
+  history_limit.frame = NSMakeRect(16, 101, 146, 22);
+  [history_card addSubview:history_limit];
+
+  self.settingsHistoryButton = [[MZSettingsChoiceButton alloc] initWithFrame:NSMakeRect(184, 90, 272, 44)];
+  self.settingsHistoryButton.target = self;
+  self.settingsHistoryButton.action = @selector(showHistoryChoices:);
+  self.settingsHistoryButton.accessibilityLabel = mz_t(@"History Limit");
+  [history_card addSubview:self.settingsHistoryButton];
+
+  NSView *history_divider = [[NSView alloc] initWithFrame:NSMakeRect(16, 72, 440, 1)];
+  history_divider.wantsLayer = YES;
+  history_divider.layer.backgroundColor = mz_card_border().CGColor;
+  [history_card addSubview:history_divider];
+
+  MZChamferedButton *clear_unpinned = [self filterButtonWithTitle:mz_t(@"Clear Unpinned") tag:-1];
+  clear_unpinned.framed = YES;
+  clear_unpinned.accentCorner = NO;
+  clear_unpinned.target = self;
+  clear_unpinned.action = @selector(clearUnpinned:);
+  clear_unpinned.frame = NSMakeRect(184, 18, 128, 38);
+  [history_card addSubview:clear_unpinned];
+
+  MZChamferedButton *clear_all = [self filterButtonWithTitle:mz_t(@"Clear All") tag:-1];
+  clear_all.framed = YES;
+  clear_all.accentCorner = NO;
+  clear_all.target = self;
+  clear_all.action = @selector(clearAll:);
+  clear_all.frame = NSMakeRect(324, 18, 132, 38);
+  [history_card addSubview:clear_all];
+
+  NSTextField *shortcuts = mz_label(mz_t(@"Shortcuts & Permissions"), [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], mz_text_secondary());
+  shortcuts.frame = NSMakeRect(28, 420, 464, 20);
+  [content addSubview:shortcuts];
+
+  NSView *shortcuts_card = [[NSView alloc] initWithFrame:NSMakeRect(24, 194, 472, 216)];
+  shortcuts_card.wantsLayer = YES;
+  shortcuts_card.layer.cornerRadius = 10.0;
+  shortcuts_card.layer.backgroundColor = mz_card_fill().CGColor;
+  shortcuts_card.layer.borderWidth = 1.0;
+  shortcuts_card.layer.borderColor = mz_card_border().CGColor;
+  [content addSubview:shortcuts_card];
+
+  NSTextField *hotkey = mz_label(mz_t(@"Global Hotkey"), [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], mz_text_primary());
+  hotkey.frame = NSMakeRect(16, 177, 146, 22);
+  [shortcuts_card addSubview:hotkey];
+
+  self.settingsHotkeyButton = [[MZSettingsChoiceButton alloc] initWithFrame:NSMakeRect(184, 166, 272, 44)];
+  self.settingsHotkeyButton.target = self;
+  self.settingsHotkeyButton.action = @selector(showHotkeyChoices:);
+  self.settingsHotkeyButton.accessibilityLabel = mz_t(@"Global Hotkey");
+  [shortcuts_card addSubview:self.settingsHotkeyButton];
+
+  NSView *shortcut_divider = [[NSView alloc] initWithFrame:NSMakeRect(16, 148, 440, 1)];
+  shortcut_divider.wantsLayer = YES;
+  shortcut_divider.layer.backgroundColor = mz_card_border().CGColor;
+  [shortcuts_card addSubview:shortcut_divider];
+
+  self.settingsAccessNote = mz_label(@"", [NSFont systemFontOfSize:12 weight:NSFontWeightRegular],
+                                     mz_text_secondary());
+  self.settingsAccessNote.maximumNumberOfLines = 2;
+  self.settingsAccessNote.lineBreakMode = NSLineBreakByWordWrapping;
+  [shortcuts_card addSubview:self.settingsAccessNote];
+
+  MZChamferedButton *permission = (MZChamferedButton *)[self filterButtonWithTitle:@"" tag:-1];
+  permission.framed = YES;
+  permission.accentCorner = NO;
+  permission.target = self;
+  permission.action = @selector(requestAccessibilityPermission:);
+  permission.frame = NSMakeRect(252, 86, 204, 44);
+  [shortcuts_card addSubview:permission];
+  self.settingsAccessButton = permission;
+
+  NSView *screen_divider = [[NSView alloc] initWithFrame:NSMakeRect(16, 72, 440, 1)];
+  screen_divider.wantsLayer = YES;
+  screen_divider.layer.backgroundColor = mz_card_border().CGColor;
+  [shortcuts_card addSubview:screen_divider];
+
+  // Screen Recording is what lets Jev see what the user sees around the paste,
+  // in every app. It belongs next to the other permission, not buried in a menu.
+  self.settingsScreenNote = mz_label(@"", [NSFont systemFontOfSize:12 weight:NSFontWeightRegular],
+                                     mz_text_secondary());
+  self.settingsScreenNote.maximumNumberOfLines = 2;
+  self.settingsScreenNote.lineBreakMode = NSLineBreakByWordWrapping;
+  [shortcuts_card addSubview:self.settingsScreenNote];
+
+  self.settingsScreenButton = (MZChamferedButton *)[self filterButtonWithTitle:@"" tag:-1];
+  self.settingsScreenButton.framed = YES;
+  self.settingsScreenButton.accentCorner = NO;
+  self.settingsScreenButton.target = self;
+  self.settingsScreenButton.action = @selector(requestScreenReadingPermission:);
+  self.settingsScreenButton.frame = NSMakeRect(252, 14, 204, 44);
+  [shortcuts_card addSubview:self.settingsScreenButton];
+  [self updatePermissionRows];
+
+  NSTextField *jev = mz_label(mz_t(@"Suggestions"), [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], mz_text_secondary());
+  jev.frame = NSMakeRect(28, 160, 464, 20);
+  [content addSubview:jev];
+
+  NSView *jev_card = [[NSView alloc] initWithFrame:NSMakeRect(24, 24, 472, 126)];
+  jev_card.wantsLayer = YES;
+  jev_card.layer.cornerRadius = 10.0;
+  jev_card.layer.backgroundColor = mz_card_fill().CGColor;
+  jev_card.layer.borderWidth = 1.0;
+  jev_card.layer.borderColor = mz_card_border().CGColor;
+  [content addSubview:jev_card];
+
+  NSTextField *jev_title = mz_label(mz_t(@"Suggest what to paste (Jev)"),
+                                    [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], mz_text_primary());
+  jev_title.frame = NSMakeRect(16, 92, 360, 22);
+  [jev_card addSubview:jev_title];
+
+  // The switch's size is the system's, not ours (it grew with newer macOS),
+  // so measure it and pin its trailing edge to the card's content inset.
+  self.settingsJevSwitch = [[NSSwitch alloc] initWithFrame:NSZeroRect];
+  NSSize switch_size = self.settingsJevSwitch.fittingSize;
+  self.settingsJevSwitch.frame = NSMakeRect(456.0 - switch_size.width, 103.0 - switch_size.height * 0.5,
+                                            switch_size.width, switch_size.height);
+  self.settingsJevSwitch.state = mz_jev_enabled() ? NSControlStateValueOn : NSControlStateValueOff;
+  self.settingsJevSwitch.target = self;
+  self.settingsJevSwitch.action = @selector(changeJevEnabledFromSettings:);
+  self.settingsJevSwitch.accessibilityLabel = mz_t(@"Suggest what to paste (Jev)");
+  [jev_card addSubview:self.settingsJevSwitch];
+
+  NSView *jev_divider = [[NSView alloc] initWithFrame:NSMakeRect(16, 76, 440, 1)];
+  jev_divider.wantsLayer = YES;
+  jev_divider.layer.backgroundColor = mz_card_border().CGColor;
+  [jev_card addSubview:jev_divider];
+
+  NSTextField *jev_key_label = mz_label(mz_t(@"TypeSafe API Key"),
+                                        [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], mz_text_primary());
+  jev_key_label.frame = NSMakeRect(16, 42, 160, 22);
+  [jev_card addSubview:jev_key_label];
+
+  // Same well as the choice buttons above. The secure field keeps its own
+  // cell (swapping in the centering cell would drop bullet echo), so it is
+  // centered inside a styled container instead.
+  NSView *jev_key_well = [[NSView alloc] initWithFrame:NSMakeRect(184, 34, 148, 38)];
+  jev_key_well.wantsLayer = YES;
+  jev_key_well.layer.cornerRadius = 8.0;
+  jev_key_well.layer.backgroundColor = mz_color(28, 31, 35, 1.0).CGColor;
+  jev_key_well.layer.borderWidth = 1.0;
+  jev_key_well.layer.borderColor = mz_card_border().CGColor;
+  [jev_card addSubview:jev_key_well];
+  ((MZSettingsWindow *)self.settingsWindow).textWell = jev_key_well;
+
+  // Secure field: the key is a credential, and Settings is shareable screen.
+  self.settingsJevKeyField = [[NSSecureTextField alloc] initWithFrame:NSZeroRect];
+  // Whether a key is stored is state, and showSettings: syncs state on every
+  // open. Building the window never touches the keychain.
+  self.settingsJevKeyField.placeholderString = @"sk-…";
+  self.settingsJevKeyField.font = [NSFont systemFontOfSize:14];
+  self.settingsJevKeyField.textColor = mz_text_primary();
+  self.settingsJevKeyField.bezeled = NO;
+  self.settingsJevKeyField.bordered = NO;
+  self.settingsJevKeyField.drawsBackground = NO;
+  self.settingsJevKeyField.focusRingType = NSFocusRingTypeNone;
+  self.settingsJevKeyField.cell.usesSingleLineMode = YES;
+  self.settingsJevKeyField.cell.scrollable = YES;
+  CGFloat key_height = self.settingsJevKeyField.fittingSize.height;
+  self.settingsJevKeyField.frame = NSMakeRect(12, (38.0 - key_height) * 0.5, 148 - 24, key_height);
+  self.settingsJevKeyField.target = self;
+  self.settingsJevKeyField.action = @selector(saveJevKeyFromSettings:);
+  self.settingsJevKeyField.accessibilityLabel = mz_t(@"TypeSafe API Key");
+  [jev_key_well addSubview:self.settingsJevKeyField];
+
+  MZChamferedButton *jev_save = [self filterButtonWithTitle:mz_t(@"Save & Check") tag:-1];
+  jev_save.framed = YES;
+  jev_save.accentCorner = NO;
+  jev_save.target = self;
+  jev_save.action = @selector(saveJevKeyFromSettings:);
+  jev_save.frame = NSMakeRect(342, 34, 114, 38);
+  [jev_card addSubview:jev_save];
+  self.settingsJevSave = jev_save;
+
+  self.settingsJevStatus = mz_label(@"", [NSFont systemFontOfSize:12 weight:NSFontWeightRegular], mz_text_secondary());
+  self.settingsJevStatus.frame = NSMakeRect(16, 8, 440, 20);
+  self.settingsJevStatus.lineBreakMode = NSLineBreakByTruncatingTail;
+  self.settingsJevStatus.maximumNumberOfLines = 1;
+  [jev_card addSubview:self.settingsJevStatus];
+
+  [self updateHistoryLimitMenu];
+  [self updateHotkeyMenu];
+  [self.settingsLanguageButton setDisplayTitle:(gLang == MZLangChinese ? @"中文" : @"English")];
+
+  self.settingsLanguageButton.nextKeyView = self.settingsHistoryButton;
+  self.settingsHistoryButton.nextKeyView = clear_unpinned;
+  clear_unpinned.nextKeyView = clear_all;
+  clear_all.nextKeyView = self.settingsHotkeyButton;
+  self.settingsHotkeyButton.nextKeyView = permission;
+  permission.nextKeyView = self.settingsScreenButton;
+  self.settingsScreenButton.nextKeyView = self.settingsJevSwitch;
+  self.settingsJevSwitch.nextKeyView = self.settingsJevKeyField;
+  self.settingsJevKeyField.nextKeyView = jev_save;
+  jev_save.nextKeyView = close;
+  close.nextKeyView = self.settingsLanguageButton;
+  self.settingsWindow.initialFirstResponder = self.settingsLanguageButton;
+  self.settingsWindow.delegate = self;
 }
 
-- (void)switchLanguageToChinese:(id)sender {
+- (void)showSettings:(id)sender {
   (void)sender;
-  mz_lang_set(MZLangChinese);
+  [self buildSettingsWindow];
+  // The window is built once but the Actions-menu item can flip the flag
+  // afterwards, so re-sync the controls on every open.
+  self.settingsJevSwitch.state = mz_jev_enabled() ? NSControlStateValueOn : NSControlStateValueOff;
+  self.settingsJevKeyField.placeholderString = mz_jev_api_key() != nil ? @"••••••••••••" : @"sk-…";
+  [self updateJevSettingsStatus];
+  [NSApp activateIgnoringOtherApps:YES];
+  if (!self.settingsWindow.isVisible) [self.settingsWindow center];
+  [self.settingsWindow makeKeyAndOrderFront:nil];
+  [self.settingsWindow makeFirstResponder:self.settingsLanguageButton];
 }
 
-- (void)changeHistoryLimit:(NSMenuItem *)sender {
-  NSInteger value = sender.tag;
+- (void)closeSettings:(id)sender {
+  (void)sender;
+  [self.settingsWindow orderOut:nil];
+  if (self.panel.isVisible) [self.panel makeKeyAndOrderFront:nil];
+}
+
+- (void)showLanguageChoices:(NSButton *)sender {
+  NSMenu *menu = [[NSMenu alloc] initWithTitle:mz_t(@"Language")];
+  NSMenuItem *english = [[NSMenuItem alloc] initWithTitle:@"English" action:@selector(changeLanguageFromSettings:) keyEquivalent:@""];
+  english.target = self;
+  english.tag = MZLangEnglish;
+  [menu addItem:english];
+  NSMenuItem *chinese = [[NSMenuItem alloc] initWithTitle:@"中文" action:@selector(changeLanguageFromSettings:) keyEquivalent:@""];
+  chinese.target = self;
+  chinese.tag = MZLangChinese;
+  [menu addItem:chinese];
+  NSMenuItem *selected = gLang == MZLangChinese ? chinese : english;
+  selected.state = NSControlStateValueOn;
+  [menu popUpMenuPositioningItem:selected atLocation:NSMakePoint(0, NSHeight(sender.bounds)) inView:sender];
+}
+
+- (void)showHistoryChoices:(NSButton *)sender {
+  NSMenu *menu = [[NSMenu alloc] initWithTitle:mz_t(@"History Limit")];
+  NSMenuItem *selected = nil;
+  for (NSNumber *choice in mz_max_item_choices()) {
+    NSInteger value = choice.integerValue;
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:mz_max_items_title(value) action:@selector(changeHistoryLimit:) keyEquivalent:@""];
+    item.target = self;
+    item.tag = value;
+    item.state = value == self.maxItemsLimit ? NSControlStateValueOn : NSControlStateValueOff;
+    if (value == self.maxItemsLimit) selected = item;
+    [menu addItem:item];
+  }
+  [menu popUpMenuPositioningItem:selected atLocation:NSMakePoint(0, NSHeight(sender.bounds)) inView:sender];
+}
+
+- (void)showHotkeyChoices:(NSButton *)sender {
+  NSMenu *menu = [[NSMenu alloc] initWithTitle:mz_t(@"Global Hotkey")];
+  NSArray<NSArray<NSString *> *> *presets = @[
+    @[ @"⌘⇧V", @"cmd-shift-v" ],
+    @[ @"⌃⇧V", @"ctrl-shift-v" ],
+    @[ @"⌥⌘V", @"opt-cmd-v" ],
+    @[ mz_t(@"Disabled"), @"disabled" ],
+  ];
+  NSString *current = [NSUserDefaults.standardUserDefaults stringForKey:@"MZHotkeyPreset"] ?: @"cmd-shift-v";
+  NSMenuItem *selected = nil;
+  for (NSArray<NSString *> *preset in presets) {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:preset[0] action:@selector(changeHotkeyPreset:) keyEquivalent:@""];
+    item.target = self;
+    item.representedObject = preset[1];
+    item.state = [current isEqualToString:preset[1]] ? NSControlStateValueOn : NSControlStateValueOff;
+    if (item.state == NSControlStateValueOn) selected = item;
+    [menu addItem:item];
+  }
+  [menu popUpMenuPositioningItem:selected atLocation:NSMakePoint(0, NSHeight(sender.bounds)) inView:sender];
+}
+
+- (void)changeLanguageFromSettings:(NSMenuItem *)sender {
+  mz_lang_set((MZLang)sender.tag);
+}
+
+- (void)changeHistoryLimit:(id)sender {
+  NSMenuItem *item = sender;
+  NSInteger value = item.tag;
   if (value <= 0) return;
   self.maxItemsLimit = value;
   [NSUserDefaults.standardUserDefaults setInteger:value forKey:kMZMaxItemsDefaultsKey];
@@ -2567,8 +4006,9 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   [self applyLocalization];
 }
 
-- (void)changeHotkeyPreset:(NSMenuItem *)sender {
-  NSString *presetId = sender.representedObject;
+- (void)changeHotkeyPreset:(id)sender {
+  NSMenuItem *item = sender;
+  NSString *presetId = item.representedObject;
   if (presetId.length == 0) return;
   int status = mz_hotkey_apply_preset(presetId.UTF8String);
   [self updateHotkeyMenu];
@@ -2582,21 +4022,20 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)updateHotkeyMenu {
-  if (self.hotkeyMenuItem == nil) return;
-  self.hotkeyMenuItem.title = mz_t(@"Hotkey");
+  if (self.settingsHotkeyButton == nil) return;
   NSString *current = [NSUserDefaults.standardUserDefaults stringForKey:@"MZHotkeyPreset"] ?: @"cmd-shift-v";
-  for (NSMenuItem *item in self.hotkeyMenuItem.submenu.itemArray) {
-    item.state = [current isEqualToString:item.representedObject] ? NSControlStateValueOn : NSControlStateValueOff;
-  }
+  NSDictionary<NSString *, NSString *> *titles = @{
+    @"cmd-shift-v": @"⌘⇧V",
+    @"ctrl-shift-v": @"⌃⇧V",
+    @"opt-cmd-v": @"⌥⌘V",
+    @"disabled": mz_t(@"Disabled"),
+  };
+  [self.settingsHotkeyButton setDisplayTitle:titles[current] ?: @"⌘⇧V"];
 }
 
 - (void)updateHistoryLimitMenu {
-  if (self.historyLimitMenuItem == nil) return;
-  self.historyLimitMenuItem.title = mz_t(@"History Limit");
-  for (NSMenuItem *item in self.historyLimitMenuItem.submenu.itemArray) {
-    item.title = mz_max_items_title(item.tag);
-    item.state = (item.tag == self.maxItemsLimit) ? NSControlStateValueOn : NSControlStateValueOff;
-  }
+  if (self.settingsHistoryButton == nil) return;
+  [self.settingsHistoryButton setDisplayTitle:mz_max_items_title(self.maxItemsLimit)];
 }
 
 - (void)applyLocalization {
@@ -2605,8 +4044,26 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   // Re-translate every static string we can reach. Per-row subtitles are reset
   // through reloadItemViews below, which calls mz_subtitle_for_row again.
   if (self.statusItem != nil) self.statusItem.button.toolTip = mz_t(@"Maccy");
-  if (self.pinButton != nil) self.pinButton.toolTip = mz_t(@"Keep window on top");
-  if (self.searchField != nil) self.searchField.placeholderString = mz_t(@"Search clipboard history...");
+  if (self.pinButton != nil) {
+    self.pinButton.toolTip = mz_t(@"Keep window on top");
+    self.pinButton.accessibilityLabel = self.pinButton.toolTip;
+  }
+  if (self.settingsButton != nil) {
+    self.settingsButton.toolTip = mz_t(@"Settings");
+    self.settingsButton.accessibilityLabel = self.settingsButton.toolTip;
+  }
+  if (self.searchField != nil) {
+    self.searchField.placeholderString = mz_t(@"Search clipboard history...");
+    self.searchField.accessibilityLabel = mz_t(@"Search Clipboard History");
+  }
+  if (self.searchHint != nil) {
+    self.searchHint.toolTip = mz_t(@"Search");
+    self.searchHint.accessibilityLabel = self.searchHint.toolTip;
+  }
+  if (self.searchClearButton != nil) {
+    self.searchClearButton.toolTip = mz_t(@"Clear Search");
+    self.searchClearButton.accessibilityLabel = self.searchClearButton.toolTip;
+  }
 
   // Filter tabs (4 main + favorites). Order in self.filterButtons matches insertion.
   if (self.filterButtons.count >= 5) {
@@ -2616,53 +4073,145 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
     [self updateFilterButtons];
   }
 
-  // Footer button.
-  if (self.clearButton != nil) self.clearButton.title = mz_t(@"Clear All");
+  if (self.footerActionsButton != nil) {
+    self.footerActionsButton.title = mz_t(@"Actions…");
+    self.footerActionsButton.accessibilityLabel = mz_t(@"Actions");
+  }
 
-  // Actions menu items (preserve our well-known order). Layout:
-  //   0 Toggle Favorite, 1 Paste as Plain Text, 2 Reveal,
-  //   3 separator,
-  //   4 Clear Unpinned, 5 Clear All,
-  //   6 separator,
-  //   7 Language, 8 History Limit (re-translated via updateHistoryLimitMenu),
-  //   9 separator,
-  //   10 Grant Accessibility Permission…, 11 Quit
-  if (self.actionsMenu.itemArray.count >= 11) {
-    self.actionsMenu.itemArray[0].title = mz_t(@"Toggle Favorite");
-    self.actionsMenu.itemArray[1].title = mz_t(@"Paste as Plain Text");
-    self.actionsMenu.itemArray[2].title = mz_t(@"Reveal");
-    self.actionsMenu.itemArray[4].title = mz_t(@"Clear Unpinned");
-    self.actionsMenu.itemArray[5].title = mz_t(@"Clear All");
-    self.actionsMenu.itemArray[7].title = mz_t(@"Language");
-  }
-  // Items appended after the fixed prefix are re-translated through their own
-  // update helpers, which look the items up by property instead of index.
   for (NSMenuItem *item in self.actionsMenu.itemArray) {
-    if (item.action == @selector(requestAccessibilityPermission:)) {
-      item.title = mz_t(@"Grant Accessibility Permission…");
-    }
+    if (item.action == @selector(toggleSelectedFavorite:)) item.title = mz_t(@"Toggle Favorite");
+    if (item.action == @selector(pasteSelectedAsPlainText:)) item.title = mz_t(@"Paste as Plain Text");
+    if (item.action == @selector(revealSelected:)) item.title = mz_t(@"Reveal");
+    if (item.action == @selector(showSettings:)) item.title = mz_t(@"Settings");
+    if (item.action == @selector(toggleJevSuggestions:)) item.title = mz_t(@"Suggest what to paste (Jev)");
+    if (item.action == @selector(toggleJevDebug:)) item.title = mz_t(@"Log Jev Decisions");
+    if (item.action == @selector(quitApplication:)) item.title = mz_t(@"Quit");
   }
-  [self updateHistoryLimitMenu];
-  [self updateHotkeyMenu];
-  // Sync the radio-style state on the language submenu.
-  if (self.languageMenuItem.submenu.itemArray.count >= 2) {
-    NSMenuItem *enItem = self.languageMenuItem.submenu.itemArray[0];
-    NSMenuItem *zhItem = self.languageMenuItem.submenu.itemArray[1];
-    enItem.state = (gLang == MZLangEnglish) ? NSControlStateValueOn : NSControlStateValueOff;
-    zhItem.state = (gLang == MZLangChinese) ? NSControlStateValueOn : NSControlStateValueOff;
+
+  BOOL settings_visible = self.settingsWindow.isVisible;
+  if (self.settingsWindow != nil) {
+    [self.settingsWindow orderOut:nil];
+    self.settingsWindow = nil;
+    self.settingsLanguageButton = nil;
+    self.settingsHistoryButton = nil;
+    self.settingsHotkeyButton = nil;
+    self.settingsJevSwitch = nil;
+    self.settingsJevKeyField = nil;
+    self.settingsJevStatus = nil;
+    self.settingsAccessNote = nil;
+    self.settingsAccessButton = nil;
+    self.settingsScreenNote = nil;
+    self.settingsScreenButton = nil;
+    self.settingsJevSave = nil;
   }
+  if (settings_visible) [self showSettings:nil];
 
   // Re-render rows so subtitles + count label refresh.
+  [self updateSearchChrome];
   [self updateCountLabel];
   [self reloadItemViews];
+}
+
+// ⌘F and its key cap. Something the person asked for has to be seen to
+// happen, and this nearly never was: the panel opens with the caret already in
+// the search field, and focusing a focused, empty field changes nothing on
+// screen -- so both looked dead. The search box answers with a flash of its
+// border.
+- (void)focusSearchFromHint:(id)sender {
+  (void)sender;
+  [self focusSearchFieldSelectingText:YES];
+  CABasicAnimation *colour = [CABasicAnimation animationWithKeyPath:@"borderColor"];
+  colour.fromValue = (__bridge id)mz_primary_orange_shadow().CGColor;
+  colour.toValue = (__bridge id)self.searchBox.layer.borderColor;
+  CABasicAnimation *width = [CABasicAnimation animationWithKeyPath:@"borderWidth"];
+  width.fromValue = @2.0;
+  width.toValue = @(self.searchBox.layer.borderWidth);
+  CAAnimationGroup *flash = [CAAnimationGroup animation];
+  flash.animations = @[ colour, width ];
+  flash.duration = 0.5;
+  flash.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+  [self.searchBox.layer addAnimation:flash forKey:@"focus-flash"];
 }
 
 - (void)clearSearch:(id)sender {
   (void)sender;
   if (self.searchField.stringValue.length == 0) return;
   self.searchField.stringValue = @"";
+  [self updateSearchChrome];
+  [self focusSearchFieldSelectingText:NO];
   void (*search)(const char *) = self.callbacks.on_search;
   if (search != NULL) dispatch_async(mz_db_queue(), ^{ search(""); });
+}
+
+- (void)updateSearchChrome {
+  BOOL has_query = self.searchField.stringValue.length > 0;
+  self.searchHint.hidden = has_query;
+  self.searchClearButton.hidden = !has_query;
+  [self updateKeyViewLoop];
+}
+
+- (void)performEmptyStateAction:(id)sender {
+  (void)sender;
+  if (self.searchField.stringValue.length > 0) {
+    [self clearSearch:nil];
+    return;
+  }
+  if (self.filterMode != MZFilterModeAll && self.filterButtons.count > 0) {
+    [self changeFilter:self.filterButtons[0]];
+    [self focusSearchFieldSelectingText:NO];
+  }
+}
+
+- (void)updateEmptyState {
+  BOOL empty = self.rows.count == 0;
+  self.listScrollView.hidden = empty;
+  self.emptyStateView.hidden = !empty;
+  if (!empty) {
+    [self updateKeyViewLoop];
+    return;
+  }
+
+  if (self.searchField.stringValue.length > 0) {
+    self.emptyStateTitleLabel.stringValue = mz_t(@"No Matches");
+    self.emptyStateBodyLabel.stringValue = mz_t(@"Try another search or clear the query.");
+    self.emptyStateActionButton.title = mz_t(@"Clear Search");
+    self.emptyStateActionButton.hidden = NO;
+  } else if (self.filterMode != MZFilterModeAll) {
+    self.emptyStateTitleLabel.stringValue = mz_t(@"No Items in This Filter");
+    self.emptyStateBodyLabel.stringValue = mz_t(@"Switch to All to see your clipboard history.");
+    self.emptyStateActionButton.title = mz_t(@"Show All");
+    self.emptyStateActionButton.hidden = NO;
+  } else {
+    self.emptyStateTitleLabel.stringValue = mz_t(@"Clipboard History Is Empty");
+    self.emptyStateBodyLabel.stringValue = mz_t(@"Copy something and it will appear here.");
+    self.emptyStateActionButton.title = @"";
+    self.emptyStateActionButton.hidden = YES;
+  }
+  self.emptyStateActionButton.accessibilityLabel = self.emptyStateActionButton.title;
+  [self updateKeyViewLoop];
+}
+
+- (void)updateKeyViewLoop {
+  if (self.searchField == nil) return;
+  NSView *current = self.searchField;
+  if (!self.searchClearButton.hidden) {
+    current.nextKeyView = self.searchClearButton;
+    current = self.searchClearButton;
+  }
+  for (NSButton *button in self.filterButtons) {
+    current.nextKeyView = button;
+    current = button;
+  }
+  BOOL empty_without_action = !self.emptyStateView.hidden && self.emptyStateActionButton.hidden;
+  NSView *history_target = !self.emptyStateView.hidden && !self.emptyStateActionButton.hidden
+      ? self.emptyStateActionButton
+      : (empty_without_action ? self.footerActionsButton : self.listContentView);
+  current.nextKeyView = history_target;
+  current = history_target;
+  if (current != self.footerActionsButton) current.nextKeyView = self.footerActionsButton;
+  self.footerActionsButton.nextKeyView = self.pinButton;
+  self.pinButton.nextKeyView = self.settingsButton;
+  self.settingsButton.nextKeyView = self.searchField;
 }
 
 - (BOOL)handleKeyEvent:(NSEvent *)event {
@@ -2683,25 +4232,42 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   BOOL hasShift = (modifiers & NSEventModifierFlagShift) != 0;
 
   if (event.keyCode == 53) {
+    if (self.settingsWindow.isKeyWindow) {
+      [self.settingsWindow orderOut:nil];
+      [self.panel makeKeyAndOrderFront:nil];
+      return YES;
+    }
     [self hide];
+    return YES;
+  }
+  if (self.settingsWindow.isKeyWindow) return NO;
+  if (event.keyCode == 48 && !hasCommand && !hasOption) {
+    NSWindow *window = NSApp.keyWindow ?: self.panel;
+    NSView *current = [window.firstResponder isKindOfClass:[NSText class]]
+        ? self.searchField
+        : ([window.firstResponder isKindOfClass:[NSView class]] ? (NSView *)window.firstResponder : self.searchField);
+    NSView *target = hasShift ? current.previousKeyView : current.nextKeyView;
+    if (target != nil) [window makeFirstResponder:target];
     return YES;
   }
 
   if (hasCommand && mz_app_matches_command_key(event, 3, @"f")) {
-    [self focusSearchFieldSelectingText:YES];
+    [self focusSearchFromHint:nil];
     return YES;
   }
-  // ⌘A / ⌘C / ⌘X / ⌘V inside the search field: we don't ship an Edit menu,
-  // so AppKit never dispatches the standard responder-chain action. Forward
-  // them to the focused field editor manually so text selection / clipboard
-  // round-tripping works as users expect. ⌘V goes to the editor too — pasting
-  // INTO the search box must win over "paste selected history item" (which
-  // stays reachable via Enter).
-  if (hasCommand && !hasOption && !hasShift && editor != nil) {
-    if (mz_app_matches_command_key(event, 0, @"a")) { [editor selectAll:nil]; return YES; }
-    if (mz_app_matches_command_key(event, 8, @"c")) { [editor copy:nil]; return YES; }
-    if (mz_app_matches_command_key(event, 7, @"x")) { [editor cut:nil]; return YES; }
-    if (mz_app_matches_command_key(event, 9, @"v")) { [editor paste:nil]; return YES; }
+  if (hasCommand && mz_app_matches_command_key(event, 43, @",")) {
+    [self showSettings:nil];
+    return YES;
+  }
+  // ⌘A / ⌘C / ⌘X / ⌘V are dispatched by the Edit menu installed at launch, so
+  // they reach whatever field holds first responder without help from here.
+  // The one thing still worth saying is that while the search field is being
+  // edited, ⌘V means "paste into the search box", not "paste the selected
+  // history item" -- so let the menu have it rather than claiming it below.
+  if (hasCommand && !hasOption && !hasShift && editor != nil &&
+      (mz_app_matches_command_key(event, 0, @"a") || mz_app_matches_command_key(event, 8, @"c") ||
+       mz_app_matches_command_key(event, 7, @"x") || mz_app_matches_command_key(event, 9, @"v"))) {
+    return NO;
   }
   if (hasCommand && mz_app_matches_command_key(event, 40, @"k")) {
     [self clearAll:nil];
@@ -2748,6 +4314,7 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   }
 
   if (!mz_app_is_enter_event(event) || hasCommand) return NO;
+  if ([first isKindOfClass:[NSButton class]]) return NO;
   if (hasOption) return [self performSelectedAction:MZ_APP_ACTION_PASTE_PLAIN hidesPanel:YES];
   if (hasShift) return [self performSelectedAction:MZ_APP_ACTION_COPY hidesPanel:YES];
   return [self performSelectedAction:MZ_APP_ACTION_PASTE hidesPanel:YES];
@@ -2811,7 +4378,12 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)controlTextDidChange:(NSNotification *)obj {
+  // Typing is not choosing a row, it is narrowing the list -- so the previous
+  // answer is stale but a fresh one on the smaller candidate set is better
+  // than none. -dispatchPendingSearch re-asks once the rows have landed.
+  [self clearJevSuggestion];
   if (obj.object != self.searchField) return;
+  [self updateSearchChrome];
   if (self.callbacks.on_search == NULL) return;
   // Coalesce rapid keystrokes; only the last query within the debounce window runs the
   // DB refresh. Schedule on common modes so we still fire while AppKit is in the
@@ -2824,6 +4396,13 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 }
 
 - (void)dispatchPendingSearch:(id)sender {
+  // Rows arrive asynchronously from the db queue; give them the same head
+  // start -show gives them before asking Jev about the filtered set.
+  // ponytail: fixed delay, move to a set_rows hook if a slow db makes it miss.
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    if (self.panel.isVisible) [self requestJevSuggestion];
+  });
   (void)sender;
   void (*search)(const char *) = self.callbacks.on_search;
   if (search == NULL || self.searchField == nil) return;
@@ -2834,6 +4413,14 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
 - (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
   (void)textView;
   if (control != self.searchField) return NO;
+  if (commandSelector == @selector(insertTab:)) {
+    [self.panel makeFirstResponder:self.searchField.nextKeyView];
+    return YES;
+  }
+  if (commandSelector == @selector(insertBacktab:)) {
+    [self.panel makeFirstResponder:self.searchField.previousKeyView];
+    return YES;
+  }
   if (commandSelector == @selector(moveUp:)) {
     [self moveSelectionByDelta:-1 focusList:NO];
     return YES;
@@ -2868,6 +4455,163 @@ static void mz_app_dispatch_action(MZAppController *controller, MZAppAction acti
   return [self performSelectedAction:MZ_APP_ACTION_PASTE hidesPanel:YES];
 }
 @end
+
+#pragma mark - Click audit
+
+// Can a person click what they can see? Pure geometry on the live view tree,
+// asked the way AppKit asks it: hit-test the window's frame view at points
+// spread over each control. Nothing is clicked, so nothing fires.
+//
+// Two rules. A point on a control must land on a control -- that one, or
+// another laid over it on purpose (the star on a history row) -- never on a
+// label, a plain view or nothing, which is a dead spot the person cannot see.
+// And every control must be hit by at least one of its own points. On top of
+// that, in a window that is movable by its background, the view that receives
+// the mouse-down must not hand it to the window drag.
+//
+// This is the net for a whole class of bug rather than one instance of it: a
+// hitTest: override in the wrong coordinate space, a label or an invisible
+// view laid over a button, a control poking out of a clipping superview, a
+// custom control that does not claim its mouse-down.
+static BOOL mz_view_is_clickable(NSView *view) {
+  if (![view isKindOfClass:NSControl.class]) return NO;
+  NSControl *control = (NSControl *)view;
+  BOOL editable = [control isKindOfClass:NSTextField.class] && ((NSTextField *)control).editable;
+  return control.enabled && (control.action != NULL || editable);
+}
+
+static void mz_audit_clicks_in(NSView *view, NSView *frame_view, NSMutableArray<NSString *> *failures,
+                               NSUInteger *audited) {
+  if (view.hidden) return;
+  if (!mz_view_is_clickable(view)) {
+    for (NSView *child in view.subviews) mz_audit_clicks_in(child, frame_view, failures, audited);
+    return;
+  }
+  *audited += 1;
+  static const CGFloat spots[5][2] = {{0.5, 0.5}, {0.12, 0.5}, {0.88, 0.5}, {0.5, 0.2}, {0.5, 0.8}};
+  NSString *name = view.accessibilityLabel.length > 0 ? view.accessibilityLabel
+      : [view isKindOfClass:NSButton.class] && ((NSButton *)view).title.length > 0 ? ((NSButton *)view).title
+      : NSStringFromClass(view.class);
+  BOOL reached = NO;
+  for (int i = 0; i < 5; i++) {
+    NSPoint local = NSMakePoint(NSMinX(view.bounds) + NSWidth(view.bounds) * spots[i][0],
+                                NSMinY(view.bounds) + NSHeight(view.bounds) * spots[i][1]);
+    // The frame view has no superview, so its hitTest: takes window coordinates.
+    NSView *hit = [frame_view hitTest:[view convertPoint:local toView:nil]];
+    BOOL own = hit != nil && (hit == view || [hit isDescendantOf:view]);
+    reached = reached || own;
+    NSView *receiver = hit;
+    while (receiver != nil && !mz_view_is_clickable(receiver)) receiver = own ? nil : receiver.superview;
+    NSString *problem = nil;
+    if (!own && receiver == nil) {
+      problem = hit == nil ? @"nothing is hit there"
+                           : [NSString stringWithFormat:@"the click lands on %@, which does nothing",
+                                                        NSStringFromClass(hit.class)];
+    } else if (own && hit.mouseDownCanMoveWindow && view.window.movableByWindowBackground) {
+      problem = @"the mouse-down would drag the window";
+    }
+    if (problem != nil) {
+      [failures addObject:[NSString stringWithFormat:@"\"%@\" at %.0f%%,%.0f%% of its area: %@", name,
+                                                     spots[i][0] * 100.0, spots[i][1] * 100.0, problem]];
+    }
+  }
+  if (!reached) [failures addObject:[NSString stringWithFormat:@"\"%@\" cannot be reached at all", name]];
+  // What is inside a control is that control's business.
+}
+
+static NSUInteger mz_audit_clicks(NSWindow *window, NSString *label, NSUInteger *failed) {
+  [window.contentView layoutSubtreeIfNeeded];
+  NSMutableArray<NSString *> *failures = [NSMutableArray array];
+  NSUInteger audited = 0;
+  mz_audit_clicks_in(window.contentView, window.contentView.superview ?: window.contentView, failures, &audited);
+  for (NSString *failure in failures) fprintf(stderr, "ui-self-check FAIL [%s] %s\n", label.UTF8String, failure.UTF8String);
+  *failed += failures.count;
+  printf("%s: %lu clickable control(s) audited\n", label.UTF8String, (unsigned long)audited);
+
+  // MZ_UI_SNAPSHOT_DIR=<dir> also renders each window to a PNG there, so its
+  // layout can be looked at without ever putting it on the user's screen.
+  const char *directory = getenv("MZ_UI_SNAPSHOT_DIR");
+  if (directory != NULL) {
+    NSView *content = window.contentView;
+    NSBitmapImageRep *rep = [content bitmapImageRepForCachingDisplayInRect:content.bounds];
+    [content cacheDisplayInRect:content.bounds toBitmapImageRep:rep];
+    NSString *path = [[NSString stringWithUTF8String:directory]
+        stringByAppendingPathComponent:[label stringByAppendingPathExtension:@"png"]];
+    [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
+  }
+  return audited;
+}
+
+// Why there is no "click it for real" pass here: a mouse-down sent through
+// -[NSApplication sendEvent:] is only delivered to a window that is on screen,
+// and AppKit answers it by making that window key -- which takes the keyboard
+// away from whoever is working at the machine, under every activation policy,
+// non-activating panels included. Tried, measured, removed. Event routing at
+// run time is traced instead; see syncClickTrace.
+//
+// `maccy-zig ui-self-check`. Builds the real windows off screen -- never shown,
+// never activated -- and audits them, in both languages because string lengths
+// move and resize things.
+int mz_app_ui_self_check(void) {
+  @autoreleasepool {
+    [NSApplication sharedApplication];
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
+    NSUInteger failed = 0;
+    for (int lang = 0; lang < 2; lang++) {
+      gLang = lang == 0 ? MZLangEnglish : MZLangChinese;
+      NSString *suffix = lang == 0 ? @"English" : @"中文";
+      MZAppCallbacks none = {0};
+      gController = [[MZAppController alloc] initWithCallbacks:none];
+
+      [gController buildSettingsWindow];
+      mz_audit_clicks(gController.settingsWindow, [@"Settings, " stringByAppendingString:suffix], &failed);
+
+      [gController buildPanel];
+      MZAppRow rows[3] = {
+        {.id = 1, .title = "https://example.com/a", .subtitle = "", .app = "com.apple.Safari", .copied_at = 1, .content_kind = 1},
+        {.id = 2, .title = "git status", .subtitle = "", .app = "com.apple.Terminal", .copied_at = 2, .content_kind = 1, .pinned = 1},
+        {.id = 3, .title = "hello", .subtitle = "", .app = "", .copied_at = 3, .content_kind = 1},
+      };
+      mz_app_set_rows(rows, 3);
+      mz_audit_clicks(gController.panel, [@"Panel, " stringByAppendingString:suffix], &failed);
+
+      // The shortcut hint is a button: pressing it puts the caret in the search field.
+      [gController.panel makeFirstResponder:nil];
+      [gController.searchHint performClick:nil];
+      if (mz_focused_view(gController.panel) != gController.searchField) {
+        failed += 1;
+        fprintf(stderr, "ui-self-check FAIL [Panel, %s] pressing the ⌘F hint did not focus the search field\n",
+                suffix.UTF8String);
+      }
+      // ...and says so on screen, since the caret is usually there already.
+      if ([gController.searchBox.layer animationForKey:@"focus-flash"] == nil) {
+        failed += 1;
+        fprintf(stderr, "ui-self-check FAIL [Panel, %s] pressing the ⌘F hint gave no visible answer\n", suffix.UTF8String);
+      }
+
+      // The same window in its other state: a query typed, so the clear button
+      // takes the place of the shortcut hint. A control that only exists in one
+      // state is only audited if that state is visited.
+      gController.searchField.stringValue = @"git";
+      [gController updateSearchChrome];
+      mz_audit_clicks(gController.panel, [@"Panel with a query, " stringByAppendingString:suffix], &failed);
+
+      // And it has to do its job: pressing it empties the query and the hint
+      // comes back. performClick: goes through the button, not around it.
+      [gController.searchClearButton performClick:nil];
+      if (gController.searchField.stringValue.length != 0 || gController.searchHint.hidden
+          || !gController.searchClearButton.hidden) {
+        failed += 1;
+        fprintf(stderr, "ui-self-check FAIL [Panel, %s] pressing the clear button left query=\"%s\" hint hidden=%d clear hidden=%d\n",
+                suffix.UTF8String, gController.searchField.stringValue.UTF8String, gController.searchHint.hidden,
+                gController.searchClearButton.hidden);
+      }
+      gController = nil;
+    }
+    printf("ui-self-check %s\n", failed == 0 ? "ok" : "FAILED");
+    return failed == 0 ? 0 : 1;
+  }
+}
 
 void mz_app_run(MZAppCallbacks callbacks) {
   @autoreleasepool {
@@ -2932,6 +4676,7 @@ void mz_app_set_rows(const MZAppRow *rows, size_t count) {
       row.pinned = rows[i].pinned != 0;
       row.hasImage = rows[i].has_image != 0;
       row.copyCount = rows[i].copy_count;
+      row.sourceContext = mz_string_from_utf8_or_fallback(rows[i].source_context, @"");
       [copy addObject:row];
     }
 
@@ -2942,6 +4687,7 @@ void mz_app_set_rows(const MZAppRow *rows, size_t count) {
       MZRow *selected = [gController selectedItem];
       if (selected != nil) selectedRowID = selected.rowID;
 
+      [gController stampJevMarksOnRows:copy];
       gController.allRows = copy;
       [gController applyCurrentFilterPreservingSelection:selectedRowID];
       mz_debug_log(@"set_rows applied count=%lu selected=%lld",

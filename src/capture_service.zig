@@ -134,7 +134,13 @@ fn persistSnapshot(allocator: std.mem.Allocator, db: *storage.Db, snap: *const c
     const title = std.mem.sliceTo(title_buf[0..], 0);
     const content_kind = storage.classifyContentKind(views[0..valid], title);
     const app = if (snap.source_bundle != null) std.mem.span(snap.source_bundle) else "";
-    return switch (try db.upsertCapture(views[0..valid], &hash_hex, &title_buf, app, content_kind)) {
+    const outcome = try db.upsertCapture(views[0..valid], &hash_hex, &title_buf, app, content_kind);
+    // Inserted or re-copied, the entry now came from *this* window. Failing to
+    // note that is never a reason to fail the capture itself.
+    if (snap.source_context != null) {
+        db.setSourceContext(&hash_hex, std.mem.span(snap.source_context)) catch {};
+    }
+    return switch (outcome) {
         .inserted => .inserted,
         .duplicate => .duplicate,
     };

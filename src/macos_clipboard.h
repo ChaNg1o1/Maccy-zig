@@ -15,6 +15,10 @@ typedef struct MZBlob {
 typedef struct MZSnapshot {
   int64_t change_count;
   char *source_bundle;
+  /* Window title and, when exposed, the page or file the copy was made from.
+   * NULL unless Jev suggestions are on: it exists to describe candidates to
+   * the model, so it is not collected for users who never ask it anything. */
+  char *source_context;
   size_t count;
   MZBlob *blobs;
   int has_maccy_marker;
