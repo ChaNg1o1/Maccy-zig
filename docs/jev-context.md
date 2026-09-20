@@ -174,6 +174,30 @@ names the first gap until there is none. Both permissions live together in
 time the panel opens, the part of the window just above the paste is read.
 Recognised lines shaped like a credential are dropped one by one.
 
+## Where the request goes
+
+Three services, one wire format. TypeSafe's own API, Vercel AI Gateway's
+[TypeSafe-compatible API](https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe) ("an existing client
+only needs its base URL changed") and any transparent proxy in front of TypeSafe — a Cloudflare AI
+Gateway [custom provider](https://developers.cloudflare.com/ai-gateway/configuration/custom-providers/),
+for one — all take the same request and return the same response. So the question, the options and the
+acceptance rule know nothing about the service; an `MZJevRoute` carries the only things that differ:
+
+| | URL | model | credentials |
+| --- | --- | --- | --- |
+| TypeSafe | `https://api.typesafe.ai/v1/systemone` | `jev-latest` | TypeSafe key |
+| Vercel AI Gateway | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `typesafe-ai/jev` | AI Gateway key |
+| custom | `<base URL>/v1/systemone` | `jev-latest` unless set | upstream's key, plus an optional extra header for the gateway itself |
+
+Base URLs follow the SDKs' convention (everything before `/v1/systemone`), a pasted full endpoint is cut
+back to it, and only `https://` is accepted because the key and clipboard previews travel there. Each
+service has its own keychain item, so switching never loses a key, and the route is resolved once per
+request on the main thread so a request cannot mix two services' settings. Vercel's native
+`/v1/evaluate` API was not used: it renames `noul` to `boolean` and the answer fields, which would have
+meant a second request builder and parser for no gain.
+
+Both public endpoints were probed with an invalid key: each answers `401` with TypeSafe's error shape.
+
 ## Accepting the answer
 
 A `Choice`'s probabilities are relative — they sum to 1 across every option, so

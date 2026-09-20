@@ -176,7 +176,33 @@ static NSString *mz_t(NSString *en) {
       // Jev suggestions
       @"Jev picked": @"Jev 选中",
       @"Suggestions": @"智能推荐",
-      @"TypeSafe API Key": @"TypeSafe API Key",
+      @"API Key": @"API Key",
+      @"API key": @"API key",
+      @"Jev Service": @"Jev 服务",
+      @"Custom": @"自定义",
+      @"Custom endpoint…": @"自定义地址…",
+      @"Custom Jev endpoint": @"自定义 Jev 地址",
+      @"Any address that speaks TypeSafe's API — a Cloudflare AI Gateway custom provider in front of "
+       "api.typesafe.ai, for one. The base URL is everything before /v1/systemone. The extra header is only "
+       "for gateways that authenticate separately; leave it empty otherwise. The API key is set in Settings "
+       "as usual.":
+        @"任何兼容 TypeSafe 接口的地址都可以，例如架在 api.typesafe.ai 前面的 Cloudflare AI Gateway 自定义 "
+        @"provider。Base URL 是 /v1/systemone 之前的部分。附加请求头只给需要单独鉴权的网关用，不需要就留空。"
+        @"API key 仍然在设置里填写。",
+      @"Base URL": @"Base URL",
+      @"Model": @"模型",
+      @"Extra header": @"附加请求头",
+      @"Header value": @"请求头的值",
+      @"Save": @"保存",
+      @"Enter the service's base URL": @"请填写服务的 Base URL",
+      @"The base URL has to start with https://": @"Base URL 必须以 https:// 开头",
+      @"The base URL cannot carry a query, a fragment or credentials": @"Base URL 里不能带查询参数、片段或账号密码",
+      @"That is not a valid header name": @"这不是合法的请求头名称",
+      @"That header is set by MaccyZig itself": @"这个请求头由 MaccyZig 自己设置，不能覆盖",
+      @"Enter a value for the header": @"请填写请求头的值",
+      @"The header value cannot span lines": @"请求头的值不能换行",
+      @"Could not save the header value to the keychain": @"无法把请求头的值保存到钥匙串",
+      @"Set up the custom endpoint first": @"请先配置自定义地址",
       @"Save & Check": @"保存并验证",
       @"Checking the key…": @"正在验证 API key…",
       @"API key works — suggestions are on.": @"API key 可用 — 已开启智能推荐。",
@@ -185,7 +211,7 @@ static NSString *mz_t(NSString *en) {
       @"Add an API key to start getting suggestions.": @"填写 API key 后即可开始获得推荐。",
       @"Off — nothing leaves this Mac.": @"已关闭 — 没有任何内容离开这台 Mac。",
       @"On — sends previews, the field and the screen around it. Never credentials.":
-        @"已开启 — 预览、输入框及其周围的屏幕文字会发送给 TypeSafe；凭证永不发送。",
+        @"已开启 — 会发送预览、输入框及其周围的屏幕文字；凭证永不发送。",
       @"Jev timed out": @"Jev 响应超时",
       @"Log Jev Decisions": @"查看 Jev 判断过程",
       @"Jev Inspector": @"Jev 判断过程",
@@ -209,7 +235,7 @@ static NSString *mz_t(NSString *en) {
       @"Lets Jev read the screen just above where you paste.": @"让 Jev 读取你粘贴位置正上方的屏幕内容。",
       @"Allowed. Jev reads the screen just above where you paste.":
         @"已开启。Jev 会读取你粘贴位置正上方的屏幕内容。",
-      @"Needs a TypeSafe API key below.": @"还需要在下方填写 TypeSafe API key。",
+      @"Needs an API key below.": @"还需要在下方填写 API key。",
       @"Needs Accessibility to see what you are pasting into.":
         @"还需要「辅助功能」权限才能知道你要粘贴到哪里。",
       @"Needs Screen Recording to read the screen just above where you paste.":
@@ -221,9 +247,9 @@ static NSString *mz_t(NSString *en) {
         @"请在「隐私与安全性 → 屏幕录制」中勾选 MaccyZig，然后退出并重新打开 MaccyZig。"
         @"之后每次打开面板时，Jev 会读取你粘贴位置正上方的那一块窗口内容，不会读取整个屏幕。",
       @"Suggest what to paste (Jev)": @"用 Jev 推荐要粘贴的内容",
-      @"Sends item previews, the focused field and the text on screen around it to TypeSafe. "
-       "Off by default.":
-        @"会把条目预览、当前输入框及其周围的屏幕文字发送给 TypeSafe，默认关闭。",
+      @"Sends item previews, the focused field and the text on screen around it to the Jev service "
+       "chosen in Settings. Off by default.":
+        @"会把条目预览、当前输入框及其周围的屏幕文字发送给设置里选定的 Jev 服务，默认关闭。",
       @"Jev is unreachable": @"Jev 无法连接",
       @"Jev is rate limited": @"Jev 请求过于频繁",
       @"Jev rejected the API key": @"Jev 拒绝了该 API key",
@@ -1705,6 +1731,7 @@ static const CGFloat kMZPanelMinHeight = 460.0;
 @property(nonatomic, strong) NSSecureTextField *settingsJevKeyField;
 @property(nonatomic, strong) NSTextField *settingsJevStatus;
 @property(nonatomic, copy) NSArray *clickTraceMonitors;
+@property(nonatomic, strong) MZSettingsChoiceButton *settingsJevServiceButton;
 @property(nonatomic, strong) NSTextField *settingsAccessNote;
 @property(nonatomic, strong) MZChamferedButton *settingsAccessButton;
 @property(nonatomic, strong) NSTextField *settingsScreenNote;
@@ -2304,7 +2331,7 @@ static void mz_install_edit_menu(void) {
   jev_item.target = self;
   jev_item.image = mz_menu_symbol_image(@"sparkles");
   jev_item.toolTip = mz_t(@"Sends item previews, the focused field and the text on screen around it "
-                           "to TypeSafe. Off by default.");
+                           "to the Jev service chosen in Settings. Off by default.");
   jev_item.state = mz_jev_enabled() ? NSControlStateValueOn : NSControlStateValueOff;
   self.jevMenuItem = jev_item;
   [self.actionsMenu addItem:jev_item];
@@ -3481,7 +3508,7 @@ static void mz_install_edit_menu(void) {
 // about whether this feature can actually work.
 - (SEL)jevBlockerFix:(NSString **)message_out {
   if (mz_jev_api_key() == nil) {
-    *message_out = @"Needs a TypeSafe API key below.";
+    *message_out = @"Needs an API key below.";
     return @selector(focusJevKeyField);
   }
   if (mz_ax_is_trusted(0) == 0) {
@@ -3566,6 +3593,112 @@ static void mz_install_edit_menu(void) {
   self.settingsJevStatus.stringValue = mz_t(message);
 }
 
+#pragma mark Jev service
+
+- (NSString *)jevServiceShortName {
+  switch (mz_jev_service()) {
+    case MZJevServiceVercel: return @"Vercel";
+    case MZJevServiceCustom: return mz_t(@"Custom");
+    case MZJevServiceTypeSafe: break;
+  }
+  return @"TypeSafe";
+}
+
+// Everything in Settings that depends on which service is chosen: the button's
+// face, whether that service already has a key, and the status line.
+- (void)syncJevServiceControls {
+  [self.settingsJevServiceButton setDisplayTitle:[self jevServiceShortName]];
+  self.settingsJevKeyField.stringValue = @"";
+  self.settingsJevKeyField.placeholderString = mz_jev_api_key() != nil ? @"••••••••••••" : mz_t(@"API key");
+  [self updateJevSettingsStatus];
+}
+
+- (void)showJevServiceChoices:(NSButton *)sender {
+  NSMenu *menu = [[NSMenu alloc] initWithTitle:mz_t(@"Jev Service")];
+  NSArray<NSString *> *titles = @[ @"TypeSafe", @"Vercel AI Gateway", mz_t(@"Custom endpoint…") ];
+  NSMenuItem *selected = nil;
+  for (NSUInteger i = 0; i < titles.count; i++) {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:titles[i] action:@selector(changeJevService:) keyEquivalent:@""];
+    item.target = self;
+    item.tag = (NSInteger)i;
+    if ((NSInteger)i == mz_jev_service()) {
+      item.state = NSControlStateValueOn;
+      selected = item;
+    }
+    [menu addItem:item];
+  }
+  [menu popUpMenuPositioningItem:selected atLocation:NSMakePoint(0, NSHeight(sender.bounds)) inView:sender];
+}
+
+- (void)changeJevService:(NSMenuItem *)sender {
+  MZJevService service = (MZJevService)sender.tag;
+  // The custom service is nothing without an address, so choosing it is
+  // filling in the form; cancelling the form leaves the choice as it was.
+  if (service == MZJevServiceCustom && ![self editCustomJevEndpoint]) return;
+  mz_jev_set_service(service);
+  [self syncJevServiceControls];
+  // A different service is a different key; if it has none yet, that is the
+  // next thing to type.
+  if (mz_jev_api_key() == nil) [self.settingsWindow makeFirstResponder:self.settingsJevKeyField];
+  if (mz_jev_enabled() && self.panel.isVisible) [self requestJevSuggestion];
+}
+
+// Returns NO when the person cancelled.
+- (BOOL)editCustomJevEndpoint {
+  NSArray<NSString *> *labels = @[ mz_t(@"Base URL"), mz_t(@"Model"), mz_t(@"Extra header"), mz_t(@"Header value") ];
+  NSArray<NSString *> *hints = @[ @"https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/custom-<slug>",
+                                  @"jev-latest", @"cf-aig-authorization",
+                                  mz_jev_custom_has_header_value() ? @"••••••••••••" : @"Bearer …" ];
+  NSArray<NSString *> *values = @[ mz_jev_custom_base_url(),
+                                   mz_jev_custom_model(),
+                                   mz_jev_custom_header_name(), @"" ];
+  const CGFloat width = 460.0, row = 30.0, label_width = 104.0;
+  NSView *form = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, row * labels.count)];
+  NSMutableArray<NSTextField *> *fields = [NSMutableArray array];
+  for (NSUInteger i = 0; i < labels.count; i++) {
+    CGFloat y = row * (labels.count - 1 - i);
+    NSTextField *label = [NSTextField labelWithString:labels[i]];
+    label.alignment = NSTextAlignmentRight;
+    label.frame = NSMakeRect(0, y + 5, label_width, 18);
+    [form addSubview:label];
+    // The header's value is a credential for the gateway; like the API key it
+    // is typed unseen and never shown back.
+    NSTextField *field = i == 3 ? [[NSSecureTextField alloc] initWithFrame:NSZeroRect]
+                                : [[NSTextField alloc] initWithFrame:NSZeroRect];
+    field.frame = NSMakeRect(label_width + 8, y + 3, width - label_width - 8, 22);
+    field.placeholderString = hints[i];
+    field.stringValue = values[i];
+    field.cell.usesSingleLineMode = YES;
+    field.cell.scrollable = YES;
+    field.accessibilityLabel = labels[i];
+    [form addSubview:field];
+    [fields addObject:field];
+  }
+  for (NSUInteger i = 0; i + 1 < fields.count; i++) fields[i].nextKeyView = fields[i + 1];
+  fields.lastObject.nextKeyView = fields.firstObject;
+
+  NSString *problem = nil;
+  while (YES) {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = mz_t(@"Custom Jev endpoint");
+    NSString *explanation = mz_t(@"Any address that speaks TypeSafe's API — a Cloudflare AI Gateway custom provider "
+                                  "in front of api.typesafe.ai, for one. The base URL is everything before "
+                                  "/v1/systemone. The extra header is only for gateways that authenticate "
+                                  "separately; leave it empty otherwise. The API key is set in Settings as usual.");
+    alert.informativeText = problem != nil ? [NSString stringWithFormat:@"%@\n\n⚠️ %@", explanation, mz_t(problem)]
+                                           : explanation;
+    alert.accessoryView = form;
+    [alert addButtonWithTitle:mz_t(@"Save")];
+    [alert addButtonWithTitle:mz_t(@"Cancel")];
+    alert.window.initialFirstResponder = fields.firstObject;
+    [NSApp activateIgnoringOtherApps:YES];
+    if ([alert runModal] != NSAlertFirstButtonReturn) return NO;
+    problem = mz_jev_set_custom(fields[0].stringValue, fields[1].stringValue, fields[2].stringValue,
+                                fields[3].stringValue);
+    if (problem == nil) return YES;
+  }
+}
+
 - (void)saveJevKeyFromSettings:(id)sender {
   (void)sender;
   if (!self.settingsJevSave.enabled) return;  // a check is already in flight
@@ -3601,8 +3734,7 @@ static void mz_install_edit_menu(void) {
     }
     // Clear the field: the key is in the keychain now, and leaving it on
     // screen is the one place it could still be read off a shared display.
-    self.settingsJevKeyField.stringValue = @"";
-    self.settingsJevKeyField.placeholderString = @"••••••••••••";
+    [self syncJevServiceControls];
     // A key the user just proved works is almost always meant to be used.
     [self applyJevEnabled:YES];
     [self setJevStatus:@"API key works — suggestions are on." color:mz_text_secondary()];
@@ -3840,10 +3972,13 @@ static void mz_open_privacy_pane(NSString *anchor) {
   jev_divider.layer.backgroundColor = mz_card_border().CGColor;
   [jev_card addSubview:jev_divider];
 
-  NSTextField *jev_key_label = mz_label(mz_t(@"TypeSafe API Key"),
-                                        [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], mz_text_primary());
-  jev_key_label.frame = NSMakeRect(16, 42, 160, 22);
-  [jev_card addSubview:jev_key_label];
+  // Whose key this is, and with it where requests go. It stands where a fixed
+  // "TypeSafe API Key" label used to be, so the card did not have to grow.
+  self.settingsJevServiceButton = [[MZSettingsChoiceButton alloc] initWithFrame:NSMakeRect(16, 34, 160, 38)];
+  self.settingsJevServiceButton.target = self;
+  self.settingsJevServiceButton.action = @selector(showJevServiceChoices:);
+  self.settingsJevServiceButton.accessibilityLabel = mz_t(@"Jev Service");
+  [jev_card addSubview:self.settingsJevServiceButton];
 
   // Same well as the choice buttons above. The secure field keeps its own
   // cell (swapping in the centering cell would drop bullet echo), so it is
@@ -3861,7 +3996,7 @@ static void mz_open_privacy_pane(NSString *anchor) {
   self.settingsJevKeyField = [[NSSecureTextField alloc] initWithFrame:NSZeroRect];
   // Whether a key is stored is state, and showSettings: syncs state on every
   // open. Building the window never touches the keychain.
-  self.settingsJevKeyField.placeholderString = @"sk-…";
+  self.settingsJevKeyField.placeholderString = mz_t(@"API key");
   self.settingsJevKeyField.font = [NSFont systemFontOfSize:14];
   self.settingsJevKeyField.textColor = mz_text_primary();
   self.settingsJevKeyField.bezeled = NO;
@@ -3874,7 +4009,7 @@ static void mz_open_privacy_pane(NSString *anchor) {
   self.settingsJevKeyField.frame = NSMakeRect(12, (38.0 - key_height) * 0.5, 148 - 24, key_height);
   self.settingsJevKeyField.target = self;
   self.settingsJevKeyField.action = @selector(saveJevKeyFromSettings:);
-  self.settingsJevKeyField.accessibilityLabel = mz_t(@"TypeSafe API Key");
+  self.settingsJevKeyField.accessibilityLabel = mz_t(@"API Key");
   [jev_key_well addSubview:self.settingsJevKeyField];
 
   MZChamferedButton *jev_save = [self filterButtonWithTitle:mz_t(@"Save & Check") tag:-1];
@@ -3894,6 +4029,7 @@ static void mz_open_privacy_pane(NSString *anchor) {
 
   [self updateHistoryLimitMenu];
   [self updateHotkeyMenu];
+  [self.settingsJevServiceButton setDisplayTitle:[self jevServiceShortName]];
   [self.settingsLanguageButton setDisplayTitle:(gLang == MZLangChinese ? @"中文" : @"English")];
 
   self.settingsLanguageButton.nextKeyView = self.settingsHistoryButton;
@@ -3903,7 +4039,8 @@ static void mz_open_privacy_pane(NSString *anchor) {
   self.settingsHotkeyButton.nextKeyView = permission;
   permission.nextKeyView = self.settingsScreenButton;
   self.settingsScreenButton.nextKeyView = self.settingsJevSwitch;
-  self.settingsJevSwitch.nextKeyView = self.settingsJevKeyField;
+  self.settingsJevSwitch.nextKeyView = self.settingsJevServiceButton;
+  self.settingsJevServiceButton.nextKeyView = self.settingsJevKeyField;
   self.settingsJevKeyField.nextKeyView = jev_save;
   jev_save.nextKeyView = close;
   close.nextKeyView = self.settingsLanguageButton;
@@ -3917,8 +4054,7 @@ static void mz_open_privacy_pane(NSString *anchor) {
   // The window is built once but the Actions-menu item can flip the flag
   // afterwards, so re-sync the controls on every open.
   self.settingsJevSwitch.state = mz_jev_enabled() ? NSControlStateValueOn : NSControlStateValueOff;
-  self.settingsJevKeyField.placeholderString = mz_jev_api_key() != nil ? @"••••••••••••" : @"sk-…";
-  [self updateJevSettingsStatus];
+  [self syncJevServiceControls];
   [NSApp activateIgnoringOtherApps:YES];
   if (!self.settingsWindow.isVisible) [self.settingsWindow center];
   [self.settingsWindow makeKeyAndOrderFront:nil];
@@ -4096,6 +4232,7 @@ static void mz_open_privacy_pane(NSString *anchor) {
     self.settingsHistoryButton = nil;
     self.settingsHotkeyButton = nil;
     self.settingsJevSwitch = nil;
+    self.settingsJevServiceButton = nil;
     self.settingsJevKeyField = nil;
     self.settingsJevStatus = nil;
     self.settingsAccessNote = nil;

@@ -11,8 +11,22 @@
 // row ids -- no free text -- so the answer drops straight into the selection
 // logic. https://docs.typesafe.ai/api
 
-static NSString *const kMZJevEndpoint = @"https://api.typesafe.ai/v1/systemone";
-static NSString *const kMZJevModel = @"jev-latest";
+// Three ways to reach the same model, one wire format. TypeSafe's own API,
+// Vercel AI Gateway's TypeSafe-compatible API ("an existing client only needs
+// its base URL changed") and any transparent proxy in front of TypeSafe -- a
+// Cloudflare AI Gateway custom provider, say -- all take this request and
+// return this response. What differs is only where it is sent, what the model
+// is called there, and the credentials. Base URLs follow the SDKs' convention:
+// everything before /v1/systemone.
+static NSString *const kMZJevSystemOnePath = @"/v1/systemone";
+static NSString *const kMZJevTypeSafeBase = @"https://api.typesafe.ai";
+static NSString *const kMZJevTypeSafeModel = @"jev-latest";
+static NSString *const kMZJevVercelBase = @"https://ai-gateway.vercel.sh/typesafe";
+static NSString *const kMZJevVercelModel = @"typesafe-ai/jev";
+static NSString *const kMZJevServiceKey = @"MZJevService";
+static NSString *const kMZJevCustomBaseKey = @"MZJevCustomBaseURL";
+static NSString *const kMZJevCustomModelKey = @"MZJevCustomModel";
+static NSString *const kMZJevCustomHeaderNameKey = @"MZJevCustomHeaderName";
 static NSString *const kMZJevEnabledKey = @"MZJevEnabled";
 static NSString *const kMZJevNoneOption = @"none";
 
@@ -170,47 +184,66 @@ static NSString *mz_jev_keychain_service(void) {
   });
   return service;
 }
-static NSString *const kMZJevKeychainAccount = @"typesafe-api-key";
+// One item per service, so switching back and forth never loses a key. The
+// first account name predates the others and stays as it is: it is what
+// installed copies already have in their keychains.
+static NSString *mz_jev_key_account(MZJevService service) {
+  switch (service) {
+    case MZJevServiceVercel: return @"vercel-ai-gateway-api-key";
+    case MZJevServiceCustom: return @"custom-api-key";
+    case MZJevServiceTypeSafe: break;
+  }
+  return @"typesafe-api-key";
+}
+static NSString *const kMZJevCustomHeaderAccount = @"custom-header-value";
 
-// Read once per launch. The panel reads the key every time it opens, and each
-// read is a chance for the system to put an authorisation dialog in front of
-// the user; one read per process is all this ever needed.
-static NSString *gCachedApiKey = nil;
-static BOOL gApiKeyLoaded = NO;
+// Read once per launch per item. The panel wants the key every time it opens,
+// and each read is a chance for the system to put an authorisation dialog in
+// front of the user. NSNull marks "looked, nothing there".
+static NSMutableDictionary<NSString *, id> *mz_jev_secret_cache(void) {
+  static NSMutableDictionary *cache;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ cache = [NSMutableDictionary dictionary]; });
+  return cache;
+}
 
 // The keychain, not NSUserDefaults: the defaults plist sits unencrypted in the
 // user's container and gets swept up by backups and support bundles.
-static NSDictionary *mz_jev_keychain_query(void) {
+static NSDictionary *mz_jev_keychain_query(NSString *account) {
   return @{
     (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
     (__bridge id)kSecAttrService: mz_jev_keychain_service(),
-    (__bridge id)kSecAttrAccount: kMZJevKeychainAccount,
+    (__bridge id)kSecAttrAccount: account,
   };
 }
 
-NSString *mz_jev_api_key(void) {
-  if (gApiKeyLoaded) return gCachedApiKey;
-  gApiKeyLoaded = YES;
-  NSMutableDictionary *query = [NSMutableDictionary dictionaryWithDictionary:mz_jev_keychain_query()];
+static NSString *mz_jev_secret(NSString *account) {
+  NSMutableDictionary *cache = mz_jev_secret_cache();
+  @synchronized(cache) {
+    id cached = cache[account];
+    if (cached != nil) return cached == NSNull.null ? nil : cached;
+  }
+  NSMutableDictionary *query = [NSMutableDictionary dictionaryWithDictionary:mz_jev_keychain_query(account)];
   query[(__bridge id)kSecReturnData] = @YES;
   query[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
   CFTypeRef result = NULL;
-  if (SecItemCopyMatching((__bridge CFDictionaryRef)query, &result) != errSecSuccess || result == NULL) {
-    return nil;
+  NSString *value = nil;
+  if (SecItemCopyMatching((__bridge CFDictionaryRef)query, &result) == errSecSuccess && result != NULL) {
+    NSData *data = (__bridge_transfer NSData *)result;
+    value = [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (value.length == 0) value = nil;
   }
-  NSData *data = (__bridge_transfer NSData *)result;
-  NSString *key = [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
-      stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  gCachedApiKey = key.length > 0 ? key : nil;
-  return gCachedApiKey;
+  @synchronized(cache) { cache[account] = value ?: (id)NSNull.null; }
+  return value;
 }
 
-BOOL mz_jev_set_api_key(NSString *key) {
-  NSString *trimmed = [key stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+static BOOL mz_jev_set_secret(NSString *account, NSString *secret) {
+  NSString *trimmed = [secret ?: @"" stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   // Whatever happens below, the cache must not outlive the change.
-  gCachedApiKey = trimmed.length > 0 ? [trimmed copy] : nil;
-  gApiKeyLoaded = YES;
-  NSDictionary *query = mz_jev_keychain_query();
+  NSMutableDictionary *cache = mz_jev_secret_cache();
+  @synchronized(cache) { cache[account] = trimmed.length > 0 ? (id)[trimmed copy] : (id)NSNull.null; }
+  NSDictionary *query = mz_jev_keychain_query(account);
   if (trimmed.length == 0) {
     OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
     return status == errSecSuccess || status == errSecItemNotFound;
@@ -222,12 +255,154 @@ BOOL mz_jev_set_api_key(NSString *key) {
   if (status == errSecItemNotFound) {
     NSMutableDictionary *add = [NSMutableDictionary dictionaryWithDictionary:query];
     add[(__bridge id)kSecValueData] = data;
-    // The key is only ever needed while the user is at the machine, and this
-    // keeps it out of iCloud Keychain and off other devices.
+    // Only ever needed while the user is at the machine, and this keeps it out
+    // of iCloud Keychain and off other devices.
     add[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly;
     status = SecItemAdd((__bridge CFDictionaryRef)add, NULL);
   }
   return status == errSecSuccess;
+}
+
+NSString *mz_jev_api_key(void) { return mz_jev_secret(mz_jev_key_account(mz_jev_service())); }
+
+BOOL mz_jev_set_api_key(NSString *key) { return mz_jev_set_secret(mz_jev_key_account(mz_jev_service()), key); }
+
+#pragma mark - Service
+
+MZJevService mz_jev_service(void) {
+  NSInteger stored = [NSUserDefaults.standardUserDefaults integerForKey:kMZJevServiceKey];
+  return stored == MZJevServiceVercel || stored == MZJevServiceCustom ? (MZJevService)stored : MZJevServiceTypeSafe;
+}
+
+void mz_jev_set_service(MZJevService service) {
+  [NSUserDefaults.standardUserDefaults setInteger:service forKey:kMZJevServiceKey];
+}
+
+NSString *mz_jev_custom_base_url(void) { return [NSUserDefaults.standardUserDefaults stringForKey:kMZJevCustomBaseKey] ?: @""; }
+
+NSString *mz_jev_custom_model(void) {
+  NSString *model = [NSUserDefaults.standardUserDefaults stringForKey:kMZJevCustomModelKey];
+  return model.length > 0 ? model : kMZJevTypeSafeModel;
+}
+
+NSString *mz_jev_custom_header_name(void) {
+  return [NSUserDefaults.standardUserDefaults stringForKey:kMZJevCustomHeaderNameKey] ?: @"";
+}
+
+BOOL mz_jev_custom_has_header_value(void) { return mz_jev_secret(kMZJevCustomHeaderAccount) != nil; }
+
+// A base URL as a person pastes it: with or without the endpoint path on the
+// end, with or without a trailing slash. https only -- the key and previews of
+// what is on the clipboard travel to this address.
+NSString *mz_jev_normalised_base_url(NSString *text, NSString **problem) {
+  NSString *trimmed = [text ?: @"" stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  while ([trimmed hasSuffix:@"/"]) trimmed = [trimmed substringToIndex:trimmed.length - 1];
+  if ([trimmed.lowercaseString hasSuffix:kMZJevSystemOnePath]) {
+    trimmed = [trimmed substringToIndex:trimmed.length - kMZJevSystemOnePath.length];
+  }
+  while ([trimmed hasSuffix:@"/"]) trimmed = [trimmed substringToIndex:trimmed.length - 1];
+  NSURLComponents *parts = [NSURLComponents componentsWithString:trimmed];
+  if (trimmed.length == 0 || parts == nil || parts.host.length == 0) {
+    if (problem != NULL) *problem = @"Enter the service's base URL";
+    return nil;
+  }
+  if (![parts.scheme.lowercaseString isEqualToString:@"https"]) {
+    if (problem != NULL) *problem = @"The base URL has to start with https://";
+    return nil;
+  }
+  if (parts.query != nil || parts.fragment != nil || parts.user != nil) {
+    if (problem != NULL) *problem = @"The base URL cannot carry a query, a fragment or credentials";
+    return nil;
+  }
+  return trimmed;
+}
+
+// An extra request header, for gateways that authenticate separately from the
+// model provider. The three named here are this client's own.
+NSString *mz_jev_header_name_problem(NSString *name) {
+  if (name.length == 0) return nil;
+  NSCharacterSet *token = [NSCharacterSet characterSetWithCharactersInString:
+      @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'*+-.^_`|~"];
+  if ([name rangeOfCharacterFromSet:token.invertedSet].location != NSNotFound) return @"That is not a valid header name";
+  if ([@[ @"authorization", @"content-type", @"content-length", @"host" ] containsObject:name.lowercaseString]) {
+    return @"That header is set by MaccyZig itself";
+  }
+  return nil;
+}
+
+NSString *mz_jev_set_custom(NSString *base_url, NSString *model, NSString *header_name, NSString *header_value) {
+  NSString *problem = nil;
+  NSString *base = mz_jev_normalised_base_url(base_url, &problem);
+  if (base == nil) return problem;
+  NSCharacterSet *space = NSCharacterSet.whitespaceAndNewlineCharacterSet;
+  NSString *name = [header_name ?: @"" stringByTrimmingCharactersInSet:space];
+  problem = mz_jev_header_name_problem(name);
+  if (problem != nil) return problem;
+  NSString *value = [header_value ?: @"" stringByTrimmingCharactersInSet:space];
+  // A blank value field means "keep what is stored", as the key field does:
+  // the stored value is never shown, so it cannot be retyped from sight.
+  if (name.length > 0 && value.length == 0 && !mz_jev_custom_has_header_value()) return @"Enter a value for the header";
+  if ([value rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound) {
+    return @"The header value cannot span lines";
+  }
+
+  NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+  [defaults setObject:base forKey:kMZJevCustomBaseKey];
+  [defaults setObject:[model ?: @"" stringByTrimmingCharactersInSet:space] forKey:kMZJevCustomModelKey];
+  [defaults setObject:name forKey:kMZJevCustomHeaderNameKey];
+  if (name.length == 0) {
+    mz_jev_set_secret(kMZJevCustomHeaderAccount, nil);
+  } else if (value.length > 0 && !mz_jev_set_secret(kMZJevCustomHeaderAccount, value)) {
+    return @"Could not save the header value to the keychain";
+  }
+  return nil;
+}
+
+NSString *mz_jev_service_name(void) {
+  switch (mz_jev_service()) {
+    case MZJevServiceVercel: return @"Vercel AI Gateway";
+    case MZJevServiceCustom: return [NSURLComponents componentsWithString:mz_jev_custom_base_url()].host ?: @"custom endpoint";
+    case MZJevServiceTypeSafe: break;
+  }
+  return @"TypeSafe";
+}
+
+// Everything one request needs to know about where it is going, taken in one
+// go so that a request never mixes two services' settings.
+@interface MZJevRoute : NSObject
+@property(nonatomic, copy) NSURL *url;
+@property(nonatomic, copy) NSString *model;
+@property(nonatomic, copy) NSString *apiKey;
+@property(nonatomic, copy) NSString *headerName;
+@property(nonatomic, copy) NSString *headerValue;
+@end
+@implementation MZJevRoute
+@end
+
+// Address and model name for a service: the part with no secrets in it, and
+// so the part the self-check can hold to the documented values.
+static MZJevRoute *mz_jev_route_for(MZJevService service, NSString *custom_base, NSString *custom_model) {
+  NSString *base = service == MZJevServiceVercel ? kMZJevVercelBase
+      : service == MZJevServiceCustom ? mz_jev_normalised_base_url(custom_base, NULL) : kMZJevTypeSafeBase;
+  if (base == nil) return nil;
+  MZJevRoute *route = [MZJevRoute new];
+  route.url = [NSURL URLWithString:[base stringByAppendingString:kMZJevSystemOnePath]];
+  route.model = service == MZJevServiceVercel ? kMZJevVercelModel
+      : service == MZJevServiceCustom && custom_model.length > 0 ? custom_model : kMZJevTypeSafeModel;
+  return route.url != nil ? route : nil;
+}
+
+// `key` overrides the stored one: checking a key before it is saved.
+static MZJevRoute *mz_jev_route(NSString *key) {
+  MZJevService service = mz_jev_service();
+  MZJevRoute *route = mz_jev_route_for(service, mz_jev_custom_base_url(), mz_jev_custom_model());
+  if (route == nil) return nil;
+  route.apiKey = key ?: mz_jev_api_key();
+  if (service == MZJevServiceCustom && mz_jev_custom_header_name().length > 0) {
+    route.headerName = mz_jev_custom_header_name();
+    route.headerValue = mz_jev_secret(kMZJevCustomHeaderAccount);
+  }
+  return route;
 }
 
 #pragma mark - Redaction
@@ -800,7 +975,7 @@ static NSString *mz_jev_source_context(const char *raw) {
 
 // Builds the POST body. Split out from the networking so the self-check can
 // inspect it without touching the network.
-static NSDictionary *mz_jev_build_body(NSDictionary *focus, NSArray<NSDictionary *> *entries) {
+static NSDictionary *mz_jev_build_body(NSDictionary *focus, NSArray<NSDictionary *> *entries, NSString *model) {
   NSMutableDictionary *criteria = [NSMutableDictionary dictionaryWithCapacity:entries.count + 1];
   for (NSDictionary *entry in entries) {
     criteria[[entry[@"id"] stringValue]] = mz_jev_option_text(entry);
@@ -869,7 +1044,7 @@ static NSDictionary *mz_jev_build_body(NSDictionary *focus, NSArray<NSDictionary
     break;
   }
 
-  return @{@"model": kMZJevModel, @"state": state, @"questions": questions};
+  return @{@"model": model, @"state": state, @"questions": questions};
 }
 
 // Returns the picked row id, or 0 with `status` explaining why nothing was
@@ -944,7 +1119,7 @@ static int64_t mz_jev_pick_from_answer(NSDictionary *payload,
 // the Settings "check key" button report failures in the same words.
 // `handler` runs off the main queue with either a payload or a message.
 static NSURLSessionDataTask *mz_jev_post(NSDictionary *body,
-                                         NSString *apiKey,
+                                         MZJevRoute *route,
                                          NSTimeInterval timeout,
                                          void (^handler)(NSDictionary *payload, NSString *failure)) {
   NSData *json = [NSJSONSerialization dataWithJSONObject:body options:0 error:NULL];
@@ -953,12 +1128,15 @@ static NSURLSessionDataTask *mz_jev_post(NSDictionary *body,
     return nil;
   }
 
-  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:kMZJevEndpoint]];
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:route.url];
   request.HTTPMethod = @"POST";
   request.timeoutInterval = timeout;
   request.HTTPBody = json;
-  [request setValue:[@"Bearer " stringByAppendingString:apiKey] forHTTPHeaderField:@"Authorization"];
+  [request setValue:[@"Bearer " stringByAppendingString:route.apiKey] forHTTPHeaderField:@"Authorization"];
   [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+  if (route.headerName.length > 0 && route.headerValue.length > 0) {
+    [request setValue:route.headerValue forHTTPHeaderField:route.headerName];
+  }
 
   NSURLSessionDataTask *task =
       [NSURLSession.sharedSession dataTaskWithRequest:request
@@ -994,12 +1172,17 @@ void mz_jev_verify_api_key(NSString *key, void (^completion)(BOOL ok, NSString *
   }
   // Smallest question the service will accept: we only care whether the key
   // and the network work, not what the answer is.
+  MZJevRoute *route = mz_jev_route(trimmed);
+  if (route == nil) {
+    dispatch_async(dispatch_get_main_queue(), ^{ completion(NO, @"Set up the custom endpoint first"); });
+    return;
+  }
   NSDictionary *body = @{
-    @"model": kMZJevModel,
+    @"model": route.model,
     @"state": @"ping",
     @"questions": @{@"ok": @{@"type": @"noul", @"instructions": @"Is this text non-empty?"}},
   };
-  NSURLSessionDataTask *task = mz_jev_post(body, trimmed, 10.0, ^(NSDictionary *payload, NSString *failure) {
+  NSURLSessionDataTask *task = mz_jev_post(body, route, 10.0, ^(NSDictionary *payload, NSString *failure) {
     dispatch_async(dispatch_get_main_queue(), ^{
       completion(payload != nil, payload != nil ? @"API key works" : failure);
     });
@@ -1094,13 +1277,13 @@ int mz_jev_eval_sample(const char *sample_json, int64_t chosen_row, MZJevEvalRes
   for (NSDictionary *entry in entries) {
     if ([entry[@"id"] longLongValue] == chosen_row) { out->chosen_present = 1; break; }
   }
-  NSString *apiKey = mz_jev_api_key();
-  if (apiKey == nil) return 3;
+  MZJevRoute *route = mz_jev_route(nil);
+  if (route.apiKey == nil) return 3;
 
   __block NSDictionary *answer = nil;
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   // A generous timeout: this is an offline batch, not a panel waiting to draw.
-  NSURLSessionDataTask *task = mz_jev_post(mz_jev_build_body(focus, entries), apiKey, 20.0,
+  NSURLSessionDataTask *task = mz_jev_post(mz_jev_build_body(focus, entries, route.model), route, 20.0,
                                            ^(NSDictionary *payload, NSString *failure) {
     answer = payload;
     dispatch_semaphore_signal(done);
@@ -1153,8 +1336,10 @@ void mz_jev_suggest(pid_t target_pid,
     finish(0, 0.0, nil, nil);
     return;
   }
-  NSString *apiKey = mz_jev_api_key();
-  if (apiKey == nil) {
+  // Taken here, on the main thread and in one go: the request below is built
+  // on another queue, and it must not see half of a settings change.
+  MZJevRoute *route = mz_jev_route(nil);
+  if (route.apiKey == nil) {
     finish(0, 0.0, nil, @"Jev needs an API key (Settings)");
     return;
   }
@@ -1214,7 +1399,7 @@ void mz_jev_suggest(pid_t target_pid,
             [entry[@"source_bundle_id"] isEqualToString:destination_bundle] ? @YES : @NO;
       }
     }
-    NSDictionary *body = mz_jev_build_body(focus, entries);
+    NSDictionary *body = mz_jev_build_body(focus, entries, route.model);
     mz_jev_remember_sample(focus, entries);
     if (mz_jev_debug()) {
       mz_jev_log(@"--- suggestion ---");
@@ -1224,7 +1409,7 @@ void mz_jev_suggest(pid_t target_pid,
         mz_jev_log(@"  option %@: %@", option, criteria[option]);
       }
     }
-    NSURLSessionDataTask *task = mz_jev_post(body, apiKey, kMZJevTimeout, ^(NSDictionary *payload, NSString *failure) {
+    NSURLSessionDataTask *task = mz_jev_post(body, route, kMZJevTimeout, ^(NSDictionary *payload, NSString *failure) {
       if (payload == nil) {
         mz_jev_log(@"request failed: %@", failure ?: @"cancelled");
         if (failure != nil) finish(0, 0.0, nil, failure);
@@ -1344,7 +1529,8 @@ int mz_jev_self_check(void) {
                                            @{@"id": @9, @"preview": @"墨尔本有什么好玩的", @"shape": @"a piece of text",
                                              @"source_app": @"Notes", @"age": @"yesterday", @"copy_count": @1,
                                              @"pinned": @NO, @"pastes_into_destination": @0,
-                                             @"copied_from_destination": @NO}]);
+                                             @"copied_from_destination": @NO}],
+                                         kMZJevVercelModel);
   NSDictionary *criteria = body[@"questions"][@"pick"][@"criteria"];
   MZ_EXPECT(criteria.count == 3, "two candidates plus a no-match option");
   MZ_EXPECT(criteria[@"7"] != nil && criteria[@"9"] != nil, "options keyed by row id");
@@ -1386,14 +1572,14 @@ int mz_jev_self_check(void) {
   MZ_EXPECT([mz_jev_source_context(NULL) isEqualToString:@""], "no context is empty, not nil");
 
   // The shadow question exists only when the panel's default row is a candidate.
-  NSDictionary *with_default = mz_jev_build_body(@{@"app_name": @"Terminal"}, @[rich]);
+  NSDictionary *with_default = mz_jev_build_body(@{@"app_name": @"Terminal"}, @[rich], kMZJevTypeSafeModel);
   MZ_EXPECT(with_default[@"questions"][@"default_fits"] != nil,
             "default row present: shadow question is asked about it");
   MZ_EXPECT([with_default[@"state"] count] == 1 && with_default[@"state"][@"destination"] != nil,
             "state holds the destination and nothing else: questions share it");
   NSMutableDictionary *not_default = [rich mutableCopy];
   not_default[@"rank"] = @1;
-  NSDictionary *without_default = mz_jev_build_body(@{@"app_name": @"Terminal"}, @[not_default]);
+  NSDictionary *without_default = mz_jev_build_body(@{@"app_name": @"Terminal"}, @[not_default], kMZJevTypeSafeModel);
   MZ_EXPECT(without_default[@"questions"][@"default_fits"] == nil,
             "default row redacted away: nothing to ask about");
   MZ_EXPECT([NSJSONSerialization isValidJSONObject:with_default], "body with shadow question serializes");
@@ -1404,7 +1590,7 @@ int mz_jev_self_check(void) {
   MZ_EXPECT(sample != nil && mz_jev_take_last_sample() == nil, "a sample can be taken exactly once");
   NSDictionary *parsed = [NSJSONSerialization JSONObjectWithData:[sample dataUsingEncoding:NSUTF8StringEncoding]
                                                          options:0 error:NULL];
-  NSDictionary *rebuilt = mz_jev_build_body(parsed[@"destination"], parsed[@"entries"]);
+  NSDictionary *rebuilt = mz_jev_build_body(parsed[@"destination"], parsed[@"entries"], kMZJevTypeSafeModel);
   MZ_EXPECT([rebuilt[@"questions"][@"pick"][@"criteria"][@"7"] isEqualToString:mz_jev_option_text(rich)],
             "a stored sample rebuilds to the same option sentence");
 
@@ -1455,6 +1641,53 @@ int mz_jev_self_check(void) {
   NSRect tall = NSMakeRect(500, 200, 720, 1200);
   placed = mz_jev_inspector_frame(tall, panel, screen);
   MZ_EXPECT(NSMinY(placed) >= NSMinY(screen), "a tall window is clamped to the screen");
+
+  // Services. The body carries whatever the service calls the model.
+  MZ_EXPECT([body[@"model"] isEqualToString:@"typesafe-ai/jev"], "the model name follows the service");
+  NSString *problem = nil;
+  MZ_EXPECT([mz_jev_normalised_base_url(@" https://gateway.ai.cloudflare.com/v1/acct/gw/custom-typesafe/v1/systemone/ ", &problem)
+                isEqualToString:@"https://gateway.ai.cloudflare.com/v1/acct/gw/custom-typesafe"],
+            "a pasted endpoint is cut back to its base URL");
+  MZ_EXPECT([mz_jev_normalised_base_url(@"https://ai-gateway.vercel.sh/typesafe", &problem)
+                isEqualToString:@"https://ai-gateway.vercel.sh/typesafe"], "a base URL is kept as it is");
+  MZ_EXPECT(mz_jev_normalised_base_url(@"http://proxy.example.com", &problem) == nil && problem != nil,
+            "plain http is refused: the key would travel in the clear");
+  MZ_EXPECT(mz_jev_normalised_base_url(@"https://user:pw@proxy.example.com", &problem) == nil, "credentials in the URL are refused");
+  MZ_EXPECT(mz_jev_normalised_base_url(@"not a url", &problem) == nil, "garbage is refused");
+  MZ_EXPECT(mz_jev_normalised_base_url(@"", &problem) == nil, "empty is refused");
+  MZ_EXPECT(mz_jev_header_name_problem(@"cf-aig-authorization") == nil, "a gateway's own auth header is accepted");
+  MZ_EXPECT(mz_jev_header_name_problem(@"") == nil, "no extra header is fine");
+  MZ_EXPECT(mz_jev_header_name_problem(@"Authorization") != nil, "the client's own headers cannot be overridden");
+  MZ_EXPECT(mz_jev_header_name_problem(@"bad header") != nil, "a header name with a space is refused");
+  MZJevRoute *direct = mz_jev_route_for(MZJevServiceTypeSafe, nil, nil);
+  MZ_EXPECT([direct.url.absoluteString isEqualToString:@"https://api.typesafe.ai/v1/systemone"]
+                && [direct.model isEqualToString:@"jev-latest"], "TypeSafe: its own address and model name");
+  MZJevRoute *vercel = mz_jev_route_for(MZJevServiceVercel, nil, nil);
+  MZ_EXPECT([vercel.url.absoluteString isEqualToString:@"https://ai-gateway.vercel.sh/typesafe/v1/systemone"]
+                && [vercel.model isEqualToString:@"typesafe-ai/jev"], "Vercel: the TypeSafe-compatible API and its model name");
+  MZJevRoute *proxied = mz_jev_route_for(MZJevServiceCustom, @"https://gateway.ai.cloudflare.com/v1/a/g/custom-typesafe/", @"");
+  MZ_EXPECT([proxied.url.absoluteString isEqualToString:@"https://gateway.ai.cloudflare.com/v1/a/g/custom-typesafe/v1/systemone"]
+                && [proxied.model isEqualToString:@"jev-latest"], "custom: base URL plus the endpoint path, TypeSafe's model name by default");
+  MZ_EXPECT(mz_jev_route_for(MZJevServiceCustom, @"", nil) == nil, "custom with no address goes nowhere");
+  // The request as it would leave, without sending it.
+  proxied.apiKey = @"key";
+  proxied.headerName = @"cf-aig-authorization";
+  proxied.headerValue = @"Bearer gateway-token";
+  NSURLSessionDataTask *unsent = mz_jev_post(@{@"model": proxied.model}, proxied, 1.0, ^(NSDictionary *p, NSString *f) {
+    (void)p;
+    (void)f;
+  });
+  NSDictionary *sent = unsent.originalRequest.allHTTPHeaderFields;
+  MZ_EXPECT([sent[@"Authorization"] isEqualToString:@"Bearer key"]
+                && [sent[@"cf-aig-authorization"] isEqualToString:@"Bearer gateway-token"]
+                && [unsent.originalRequest.URL isEqual:proxied.url], "the provider's key and the gateway's header both go out");
+  [unsent cancel];
+
+  MZ_EXPECT(![mz_jev_key_account(MZJevServiceTypeSafe) isEqualToString:mz_jev_key_account(MZJevServiceVercel)]
+                && ![mz_jev_key_account(MZJevServiceVercel) isEqualToString:mz_jev_key_account(MZJevServiceCustom)],
+            "each service keeps its own key");
+  MZ_EXPECT([mz_jev_key_account(MZJevServiceTypeSafe) isEqualToString:@"typesafe-api-key"],
+            "the original keychain item keeps its name");
 
   // Which part of a window the screen read covers. Top-left coordinates: y
   // grows downwards, so "above" is smaller y. Window 1600x1000 at (100, 50).

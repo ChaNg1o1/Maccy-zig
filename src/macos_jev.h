@@ -43,6 +43,36 @@ typedef struct MZJevCandidate {
 BOOL mz_jev_enabled(void);
 void mz_jev_set_enabled(BOOL enabled);
 
+/// Where requests go. All of these speak TypeSafe's own wire format -- Vercel
+/// AI Gateway through its TypeSafe-compatible API, a custom endpoint by being a
+/// transparent proxy in front of TypeSafe (a Cloudflare AI Gateway custom
+/// provider, for one) -- so only the address, the model's name there and the
+/// credentials differ. Each service keeps its own key in the keychain.
+typedef NS_ENUM(NSInteger, MZJevService) {
+  MZJevServiceTypeSafe = 0,
+  MZJevServiceVercel = 1,
+  MZJevServiceCustom = 2,
+};
+MZJevService mz_jev_service(void);
+void mz_jev_set_service(MZJevService service);
+/// "TypeSafe", "Vercel AI Gateway", or the custom endpoint's host.
+NSString *mz_jev_service_name(void);
+
+/// The custom service. The base URL follows the SDKs' convention: everything
+/// before /v1/systemone. The extra header is for gateways that authenticate
+/// separately from the model provider; its value lives in the keychain and is
+/// never handed back, only whether there is one.
+NSString *mz_jev_custom_base_url(void);
+NSString *mz_jev_custom_model(void);
+NSString *mz_jev_custom_header_name(void);
+BOOL mz_jev_custom_has_header_value(void);
+/// Validates and stores all of it. Returns nil, or what is wrong, ready to
+/// show. A blank `header_value` keeps the stored one.
+NSString *mz_jev_set_custom(NSString *base_url, NSString *model, NSString *header_name, NSString *header_value);
+/// Pure parts of the above, exposed for the self-check.
+NSString *mz_jev_normalised_base_url(NSString *text, NSString **problem);
+NSString *mz_jev_header_name_problem(NSString *name);
+
 /// The TypeSafe API key, or nil. The login keychain is the only store: an
 /// environment override would silently shadow whatever Settings shows, and a
 /// GUI app launched from Finder would not see it anyway.
