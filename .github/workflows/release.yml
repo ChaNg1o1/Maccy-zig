@@ -63,7 +63,10 @@ jobs:
         run: zig build test
 
       - name: Package app
-        run: VERSION="$RELEASE_VERSION" ./scripts/package-app.sh
+        # The runner has no signing certificate, and package-app.sh refuses to
+        # guess an identity, so ad-hoc is asked for by name. The release notes
+        # below tell users what that means for the first launch.
+        run: VERSION="$RELEASE_VERSION" CODESIGN_IDENTITY=- ./scripts/package-app.sh
 
       - name: Verify packaged app
         run: ./scripts/smoke-package.sh
