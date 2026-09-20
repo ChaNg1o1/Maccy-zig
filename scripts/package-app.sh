@@ -8,17 +8,26 @@ UNIVERSAL="${UNIVERSAL:-1}"
 # Version stamp for Info.plist, e.g. VERSION=0.2.0 (from the release tag).
 VERSION="${VERSION:-}"
 
-zig build -Doptimize=ReleaseFast
+# The deployment target is stated, never inherited, and Info.plist is the one
+# place it is written down. Left to the default, a native build is stamped with
+# the version of macOS it was built *on*: the v0.0.5 release came out of CI as
+# `minos 15.7.4` while Info.plist and the release notes promised macOS 14, so it
+# would not launch on the very systems it claimed to support. Naming a version
+# makes Zig treat the target as foreign, hence --sysroot for both slices.
+MIN_MACOS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' resources/Info.plist)"
+SDK_PATH="$(xcrun --show-sdk-path)"
+if [ "$(uname -m)" = "arm64" ]; then
+  NATIVE_TARGET="aarch64-macos.$MIN_MACOS"
+  OTHER_TARGET="x86_64-macos.$MIN_MACOS"
+else
+  NATIVE_TARGET="x86_64-macos.$MIN_MACOS"
+  OTHER_TARGET="aarch64-macos.$MIN_MACOS"
+fi
+
+zig build -Dtarget="$NATIVE_TARGET" -Doptimize=ReleaseFast --sysroot "$SDK_PATH"
 BIN="zig-out/bin/maccy-zig"
 
 if [ "$UNIVERSAL" = "1" ]; then
-  SDK_PATH="$(xcrun --show-sdk-path)"
-  NATIVE_ARCH="$(uname -m)"
-  if [ "$NATIVE_ARCH" = "arm64" ]; then
-    OTHER_TARGET="x86_64-macos"
-  else
-    OTHER_TARGET="aarch64-macos"
-  fi
   zig build -Dtarget="$OTHER_TARGET" -Doptimize=ReleaseFast \
     --sysroot "$SDK_PATH" --prefix zig-out/cross
   mkdir -p dist
