@@ -59,14 +59,12 @@ MaccyZig is built with Zig, Objective-C, AppKit, Cocoa, and SQLite. The reposito
 - macOS 14 or newer to run the app.
 - Zig `0.16.0` or a compatible recent build to build from source.
 - Xcode Command Line Tools to compile the macOS bridge code.
-- ImageMagick (`magick`) to package the menu bar icon.
-- A valid Apple Development signing identity, or the ad-hoc signing fallback used by the packaging script.
+- A codesigning identity pinned in `.signing-identity` (or `CODESIGN_IDENTITY`). See [Code signing and Accessibility](#code-signing-and-accessibility).
 
 Install common prerequisites:
 
 ```sh
 xcode-select --install
-brew install imagemagick
 ```
 
 ## Build
@@ -104,13 +102,34 @@ The packaging script:
 - copies `resources/Info.plist`
 - generates `AppIcon.icns`
 - renders the menu bar template image from `assets/menubar.svg`
-- signs the app with `CODESIGN_IDENTITY`, the first Apple Development identity, or ad-hoc signing
+- signs the app with the pinned identity (`CODESIGN_IDENTITY`, else `.signing-identity`)
 
 To force a specific signing identity:
 
 ```sh
 CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/package-app.sh
 ```
+
+### Code signing and Accessibility
+
+macOS remembers an Accessibility grant by the app's *designated requirement*. An
+ad-hoc signature has no certificate, so its requirement is a bare
+`cdhash H"..."` that changes on every rebuild: System Settings keeps showing a
+ticked MaccyZig while `AXIsProcessTrusted()` returns false, and every paste
+re-prompts. Signing with a certificate produces a requirement built from the
+bundle id and the certificate, which survives rebuilds and reinstalls.
+
+Packaging therefore refuses to guess. Pin one identity, once:
+
+```sh
+security find-identity -v -p codesigning
+echo "Apple Development: Your Name (TEAMID)" > .signing-identity   # gitignored
+```
+
+`CODESIGN_IDENTITY=-` still produces an ad-hoc build for throwaway testing, and
+says so. When the identity changes, `scripts/install-replace.sh` notices the
+requirement no longer matches and runs `tccutil reset Accessibility` so you
+re-grant the permission once instead of on every build.
 
 ## Build and Install Locally
 
@@ -254,13 +273,93 @@ If paste actions do not work, open:
 System Settings -> Privacy & Security -> Accessibility
 ```
 
-Then add or enable `MaccyZig.app`.
+Then add or enable `MaccyZig.app`. If the checkbox is already ticked but paste
+still prompts, the app was ad-hoc signed — see
+[Code signing and Accessibility](#code-signing-and-accessibility).
+
+## Jev suggestions (optional, off by default)
+
+With *Settings → Suggestions* switched on, opening the panel asks
+[TypeSafe's Jev model](https://docs.typesafe.ai/) which history entry belongs in
+the app you are about to paste into, and preselects it. Jev answers with a typed
+choice over the candidate row ids, so the answer feeds the selection directly.
+The footer shows what it picked and how sure it was; *Actions… → Suggest what to
+paste (Jev)* is the same switch, for toggling without opening Settings.
+
+Paste the TypeSafe API key into *Settings → Suggestions → TypeSafe API Key* and
+press **Save & Check**: the key is stored in the login keychain (device-only,
+never in NSUserDefaults and never in the repo), the field is cleared, and a
+round trip against the service confirms it works before you rely on it.
+Clearing the field and pressing Save removes the stored key.
+
+What it is told about each entry, and how the answer is judged, is in
+[docs/jev-context.md](docs/jev-context.md) — including the measurements behind
+the acceptance rule.
+
+When Jev picks something the footer shows `✦ Jev picked · 98%`, and up to two
+also-rans get a faint `✦` next to their source app. A suggestion never moves
+the selection once you have started choosing yourself, and searching re-asks
+on the narrowed list instead of giving up. When it looks
+and declines, nothing is shown — the panel just keeps its normal top-of-history
+selection. Only failures you can act on (missing key, rejected key, service
+unreachable) get a footer message.
+
+What leaves the machine while it is on: previews of the top 12 visible entries
+(200 characters each), the app they were copied from, and the destination app,
+window title, focused field (400 characters) and the text on screen just above
+it (600 characters). Entries that look like
+credentials — `sk-…`, `ghp_…`, `AKIA…`, PEM blocks, `password = …`, JWTs — are
+dropped from the candidate set and never sent, and a focused field holding one
+is not echoed back. A pick is shown only when it beats the explicit "none of
+these" option and is clearly ahead of the runner-up; otherwise nothing moves.
+
+The destination is always described twice: by Accessibility (what the app says
+about the field) and by the screen (what you are looking at, in any app
+whatever it is built with). For the second, Jev reads a box of the window just
+above where the paste will land — caret, else the focused field, else the
+pointer — through ScreenCaptureKit and Vision: about 200ms, started while the
+panel is already waiting for rows, and only the lines nearest the paste are
+recognised and sent (600 characters at most, credential-shaped lines dropped).
+That needs Screen Recording, granted from *Settings → Shortcuts & Permissions*
+next to the Accessibility one.
+`maccy-zig ocr-check` times the path on your own machine. *Actions… → Log Jev
+Decisions* opens a live inspector window showing the last screen capture and,
+under it, every suggestion's destination context, the option sentences sent, the
+probabilities that came back, the accept/reject verdict and the stage timings.
+It stays open across launches while tracing is on, and writes nothing to disk. While it is
+on it also traces where each mouse-down in the app's own windows landed (window, view, whether the
+app was active), which is what a "this button does nothing" report needs; with tracing off no
+mouse monitor exists.
+
+Each candidate also says where it was copied from (window title and page or
+file, read at copy time while Jev is on), whether it was just pasted here, and
+whether it was gathered alongside something that was. Every paste leaves an
+evaluation sample; `maccy-zig jev-eval`, run from inside the app bundle, replays
+them against the current prompt and reports precision and wrong-row yanks, and
+`maccy-zig jev-context` prints what Jev is told about the focused field.
+
+Check the redaction and confidence logic offline:
+
+```sh
+./zig-out/bin/maccy-zig jev-self-check
+```
+
+Check that every control in the app's windows can actually be reached by a
+click. It builds the real Settings window and panel off screen, in both
+languages, and hit-tests points across each control the way AppKit does — no
+window is shown and nothing is clicked. `MZ_UI_SNAPSHOT_DIR=<dir>` also renders
+each window to a PNG there:
+
+```sh
+./zig-out/bin/maccy-zig ui-self-check
+```
 
 ## Shipping Checklist
 
 Before publishing a release on GitHub:
 
 - Run `zig build test`.
+- Run `./zig-out/bin/maccy-zig jev-self-check` and `./zig-out/bin/maccy-zig ui-self-check`.
 - Run `./scripts/smoke-package.sh`.
 - Run `./scripts/smoke-bundle-launch.sh`.
 - Verify the packaged app on a clean macOS account or machine.

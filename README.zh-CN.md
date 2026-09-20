@@ -46,14 +46,12 @@ MaccyZig 使用 Zig、Objective-C、AppKit、Cocoa 和 SQLite 构建。仓库也
 - 运行 App 需要 macOS 14 或更新版本。
 - 从源码构建需要 Zig `0.16.0` 或兼容的近期构建。
 - 编译 macOS 桥接代码需要 Xcode Command Line Tools。
-- 打包菜单栏图标需要 ImageMagick（`magick`）。
-- 打包脚本会使用有效的 Apple Development 签名身份；没有时会使用 ad-hoc 签名兜底。
+- 需要在 `.signing-identity`（或 `CODESIGN_IDENTITY`）中固定一个代码签名身份，详见「代码签名与辅助功能权限」。
 
 安装常用依赖：
 
 ```sh
 xcode-select --install
-brew install imagemagick
 ```
 
 ## 构建
@@ -91,13 +89,32 @@ zig build -Doptimize=ReleaseFast
 - 复制 `resources/Info.plist`
 - 生成 `AppIcon.icns`
 - 从 `assets/menubar.svg` 渲染菜单栏模板图
-- 使用 `CODESIGN_IDENTITY`、第一个 Apple Development 身份或 ad-hoc 签名进行签名
+- 使用固定的签名身份进行签名（先 `CODESIGN_IDENTITY`，其次 `.signing-identity`）
 
 指定签名身份：
 
 ```sh
 CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/package-app.sh
 ```
+
+### 代码签名与辅助功能权限
+
+macOS 用 App 的 designated requirement 记录辅助功能授权。ad-hoc 签名没有证书，
+它的 requirement 只是一串 `cdhash H"..."`，每次重新构建都会变：系统设置里
+MaccyZig 依然是勾选状态，但 `AXIsProcessTrusted()` 返回 false，于是每次粘贴都
+弹窗。用证书签名后，requirement 由 bundle id 和证书构成，跨重建、跨重装都保持
+不变。
+
+因此打包脚本不再自动猜测身份。只需固定一次：
+
+```sh
+security find-identity -v -p codesigning
+echo "Apple Development: Your Name (TEAMID)" > .signing-identity   # 已 gitignore
+```
+
+临时测试仍可用 `CODESIGN_IDENTITY=-` 走 ad-hoc，脚本会明确警告。身份变更时，
+`scripts/install-replace.sh` 会发现 requirement 不匹配并执行
+`tccutil reset Accessibility`，你只需要重新授权一次。
 
 ## 本地安装
 
@@ -262,6 +279,67 @@ dist/verification/
 系统设置 -> 隐私与安全性 -> 辅助功能
 ```
 
+如果复选框已经勾选但粘贴仍然弹窗，说明 App 是 ad-hoc 签名的，参见「代码签名与
+辅助功能权限」。
+
+## Jev 智能推荐（可选，默认关闭）
+
+在「设置 → 智能推荐」中打开后，每次唤出面板都会让
+[TypeSafe 的 Jev 模型](https://docs.typesafe.ai/)判断：在你即将粘贴的那个应用里，
+历史记录中哪一条才是你想要的，并直接预选它。Jev 返回的是候选行 id 上的类型化
+choice，可以直接驱动选中逻辑。面板底部会显示选中了哪条以及置信度；
+「操作… → 用 Jev 推荐要粘贴的内容」是同一个开关，方便不打开设置就切换。
+
+把 TypeSafe API key 粘贴到「设置 → 智能推荐 → TypeSafe API Key」并点击
+**保存并验证**：key 会存进登录钥匙串（仅本机，不进 NSUserDefaults，也不进仓库），
+输入框随即清空，并真实请求一次服务确认可用，而不是让你事后才发现填错了。
+清空输入框再点保存即可删除已存的 key。
+
+发给 Jev 的每条候选带哪些上下文、结果怎么判定，见
+[docs/jev-context.md](docs/jev-context.md)，里面有判定规则的实测数据。
+
+Jev 选中某条时，底部显示 `✦ Jev 选中 · 98%`，另有最多两条次优候选在来源应用前带一个
+淡 `✦`。你一旦自己开始选，迟到的建议就不会再抢走选中项；搜索过滤后会在更小的候选集上
+重新问一次，而不是直接放弃；它看过但没有把握时不显示任何东西，
+面板保持默认的置顶选中即可。只有你能处理的失败（缺 key、key 被拒、服务不可达）
+才会在底部提示。
+
+开启后会离开本机的数据：当前可见的前 12 条预览（每条 200 字符）、它们的来源
+应用，以及目标应用、窗口标题、聚焦输入框内容（400 字符）和它正上方的屏幕文字（600 字符）。形似凭证的条目
+（`sk-…`、`ghp_…`、`AKIA…`、PEM 私钥块、`password = …`、JWT）会直接从候选集中剔除，
+不会发送；聚焦输入框里如果是凭证也不会回传。只有当某条明显胜过「都不合适」
+选项、且明显领先第二名时才会显示推荐，否则选中行不动。
+
+目标位置始终从两个来源描述：辅助功能（应用自己对输入框的说明）和屏幕（你实际看到的内容，
+不管应用用什么技术栈写的）。后者通过 ScreenCaptureKit + Vision 读取粘贴落点正上方的一块窗口
+区域 —— 落点依次取光标、聚焦输入框、鼠标指针 —— 约 200ms，且是在面板本来就在等数据的那段
+时间里跑的；只识别并发送离落点最近的几行（最多 600 字符，形似凭证的行会被丢弃）。这需要
+「屏幕录制」权限，在「设置 → 快捷键与权限」里和辅助功能那一项并排授权。
+`maccy-zig ocr-check` 可以在你自己机器上量这条路径的耗时；「操作… → 查看 Jev 判断过程」
+会打开一个实时检查器窗口：上方显示最近一次屏幕捕获的原图，下方是每次推荐的目标上下文、
+发送的候选句子、返回的概率分布、接受或拒绝的判据和各段耗时。开着时重启也会自动回来，
+不写任何文件。开着时还会记录每次鼠标按下落在了本应用的哪个窗口、哪个视图、当时应用是否处于活动状态，
+排查「按钮点了没反应」就靠它；关闭时不存在任何鼠标监听。
+
+每条候选还会带上出处（复制那一刻的窗口标题和页面/文件，仅在 Jev 开启时采集）、是否刚在
+这里粘过、是否和刚粘过的条目是同一批复制的。每次粘贴都会留下一条评测样本；用 App 包内的
+二进制运行 `maccy-zig jev-eval`，可以把这些样本重放到当前的提问方式上，给出精度和「抢错行」
+次数；`maccy-zig jev-context` 会打印 Jev 在当前聚焦输入框上到底看到了什么。
+
+离线校验脱敏与置信度逻辑：
+
+```sh
+./zig-out/bin/maccy-zig jev-self-check
+```
+
+校验各窗口里的每个控件是否真的点得到：在屏幕外构建真实的设置窗口和主面板（中英文各一遍），
+按 AppKit 自己的方式对每个控件上的多个点做 hit-test —— 不显示任何窗口，也不触发任何点击。
+加上 `MZ_UI_SNAPSHOT_DIR=<目录>` 还会把每个窗口渲染成 PNG 存到该目录：
+
+```sh
+./zig-out/bin/maccy-zig ui-self-check
+```
+
 然后添加或启用 `MaccyZig.app`。
 
 ## 发布检查清单
@@ -269,6 +347,7 @@ dist/verification/
 发布到 GitHub 前：
 
 - 运行 `zig build test`。
+- 运行 `./zig-out/bin/maccy-zig jev-self-check` 和 `./zig-out/bin/maccy-zig ui-self-check`。
 - 运行 `./scripts/smoke-package.sh`。
 - 运行 `./scripts/smoke-bundle-launch.sh`。
 - 在干净的 macOS 账号或机器上验证打包后的 App。
