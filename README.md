@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="assets/repo-header.png" alt="MaccyZig repository header">
+  <img src="assets/repo-header.png" alt="MaccyZig 仓库头图">
 </p>
 
 <h1 align="center">MaccyZig</h1>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a>
+  <a href="README.md">简体中文</a> · <a href="README.en.md">English</a>
 </p>
 
 <p align="center">
@@ -15,218 +15,229 @@
   <img alt="UI" src="https://img.shields.io/badge/UI-AppKit%20%2B%20Cocoa-5c6bc0">
 </p>
 
-MaccyZig helps you find and reuse things you copied on macOS.
+MaccyZig 帮你在 macOS 上找回和复用复制过的内容。
 
-It lives in the menu bar, keeps a searchable clipboard history, and lets you quickly paste old text, links, images, and files without switching apps or digging through notes.
+它常驻菜单栏，自动保存可搜索的剪贴板历史，让你快速找回之前复制过的文字、链接、图片和文件，不用反复切换 App 或翻笔记。
 
-## Download
+## 下载
 
-Prebuilt macOS builds are published on the GitHub [Releases](https://github.com/ChaNg1o1/Maccy-zig/releases) page. You can also use the Releases panel on the right side of the repository page.
+预构建的 macOS 版本会发布到 GitHub [Releases](https://github.com/ChaNg1o1/Maccy-zig/releases) 页面。你也可以在仓库页面右侧的 Releases 区域直接下载。
 
-Download `MaccyZig-*-macOS.zip`, unzip it, then move `MaccyZig.app` to `/Applications`.
+下载 `MaccyZig-*-macOS.zip`，解压后把 `MaccyZig.app` 移动到 `/Applications`。
 
-Because the release build is ad-hoc signed (not notarized), macOS Gatekeeper blocks the first launch with an "Apple could not verify" dialog. To open it:
+## 你可以用它做什么
 
-1. Double-click `MaccyZig.app` (dialog appears, close it)
-2. Open **System Settings → Privacy & Security**, scroll down, click **Open Anyway**
-3. Confirm the dialog
+- 从 macOS 菜单栏打开剪贴板历史。
+- 搜索最近复制过的文字、链接、图片和文件。
+- 正常粘贴，也可以粘贴为纯文本。
+- 把重要内容加入收藏，清理历史时不会丢失。
+- 在使用图片前先预览。
+- 历史太乱时，一键清空未收藏内容。
+- 在设置菜单里调整历史数量上限。
+- 调整窗口大小，并在下次打开时保留尺寸。
+- 在英文和简体中文界面之间切换。
 
-Alternative (terminal):
-```sh
-xattr -d com.apple.quarantine /Applications/MaccyZig.app
-```
+## 面向开发者
 
-The default global hotkey is `⌘⇧V` (configurable from the menu).
+MaccyZig 使用 Zig、Objective-C、AppKit、Cocoa 和 SQLite 构建。仓库也提供 CLI 命令，用于捕获、监听、统计、列出、基准测试和导入现有 Maccy 数据。
 
-## What You Can Do
+## 环境要求
 
-- Open clipboard history from the macOS menu bar.
-- Search recent copied text, links, images, and files.
-- Paste an item normally, or paste it as plain text.
-- Mark important items as favorites so they stay around.
-- Preview copied images before using them.
-- Clear old unpinned items when the history gets noisy.
-- Configure the history limit from the settings menu.
-- Resize the window and keep that size next time.
-- Switch the interface between English and Simplified Chinese.
+- 运行 App 需要 macOS 14 或更新版本。
+- 从源码构建需要 Zig `0.16.0` 或兼容的近期构建。
+- 编译 macOS 桥接代码需要 Xcode Command Line Tools。
+- 需要在 `.signing-identity`（或 `CODESIGN_IDENTITY`）中固定一个代码签名身份，详见「代码签名与辅助功能权限」。
 
-## For Developers
-
-MaccyZig is built with Zig, Objective-C, AppKit, Cocoa, and SQLite. The repository also includes CLI commands for capture, watch, stats, listing, benchmarking, and importing existing Maccy data.
-
-## Requirements
-
-- macOS 14 or newer to run the app.
-- Zig `0.16.0` or a compatible recent build to build from source.
-- Xcode Command Line Tools to compile the macOS bridge code.
-- A codesigning identity pinned in `.signing-identity` (or `CODESIGN_IDENTITY`). See [Code signing and Accessibility](#code-signing-and-accessibility).
-
-Install common prerequisites:
+安装常用依赖：
 
 ```sh
 xcode-select --install
 ```
 
-## Build
+## 构建
 
-Build the debug/development binary:
+构建开发版二进制：
 
 ```sh
 zig build
 ```
 
-Run the app from the build output:
+从构建产物运行 App：
 
 ```sh
 zig build run
 ```
 
-Build an optimized release binary:
+构建优化版：
 
 ```sh
 zig build -Doptimize=ReleaseFast
 ```
 
-## Package The App
+## 打包 App
 
-Create `dist/MaccyZig.app`:
+生成 `dist/MaccyZig.app`：
 
 ```sh
 ./scripts/package-app.sh
 ```
 
-The packaging script:
+打包脚本会：
 
-- builds `maccy-zig` in `ReleaseFast`
-- creates the app bundle under `dist/MaccyZig.app`
-- copies `resources/Info.plist`
-- generates `AppIcon.icns`
-- renders the menu bar template image from `assets/menubar.svg`
-- signs the app with the pinned identity (`CODESIGN_IDENTITY`, else `.signing-identity`)
+- 以 `ReleaseFast` 构建 `maccy-zig`
+- 在 `dist/MaccyZig.app` 创建 App bundle
+- 复制 `resources/Info.plist`
+- 生成 `AppIcon.icns`
+- 从 `assets/menubar.svg` 渲染菜单栏模板图
+- 使用固定的签名身份进行签名（先 `CODESIGN_IDENTITY`，其次 `.signing-identity`）
 
-To force a specific signing identity:
+指定签名身份：
 
 ```sh
 CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/package-app.sh
 ```
 
-### Code signing and Accessibility
+### 代码签名与辅助功能权限
 
-macOS remembers an Accessibility grant by the app's *designated requirement*. An
-ad-hoc signature has no certificate, so its requirement is a bare
-`cdhash H"..."` that changes on every rebuild: System Settings keeps showing a
-ticked MaccyZig while `AXIsProcessTrusted()` returns false, and every paste
-re-prompts. Signing with a certificate produces a requirement built from the
-bundle id and the certificate, which survives rebuilds and reinstalls.
+macOS 用 App 的 designated requirement 记录辅助功能授权。ad-hoc 签名没有证书，
+它的 requirement 只是一串 `cdhash H"..."`，每次重新构建都会变：系统设置里
+MaccyZig 依然是勾选状态，但 `AXIsProcessTrusted()` 返回 false，于是每次粘贴都
+弹窗。用证书签名后，requirement 由 bundle id 和证书构成，跨重建、跨重装都保持
+不变。
 
-Packaging therefore refuses to guess. Pin one identity, once:
+因此打包脚本不再自动猜测身份。只需固定一次：
 
 ```sh
 security find-identity -v -p codesigning
-echo "Apple Development: Your Name (TEAMID)" > .signing-identity   # gitignored
+echo "Apple Development: Your Name (TEAMID)" > .signing-identity   # 已 gitignore
 ```
 
-`CODESIGN_IDENTITY=-` still produces an ad-hoc build for throwaway testing, and
-says so. When the identity changes, `scripts/install-replace.sh` notices the
-requirement no longer matches and runs `tccutil reset Accessibility` so you
-re-grant the permission once instead of on every build.
+临时测试仍可用 `CODESIGN_IDENTITY=-` 走 ad-hoc，脚本会明确警告。身份变更时，
+`scripts/install-replace.sh` 会发现 requirement 不匹配并执行
+`tccutil reset Accessibility`，你只需要重新授权一次。
 
-## Build and Install Locally
+## 本地安装
 
-Build and install from source:
+目前还没有已签名的公开下载包。如果想现在试用，需要先从源码构建并在本地安装打包后的 App。
+
+用新打包的版本替换 `/Applications/MaccyZig.app`：
 
 ```sh
 ./scripts/install-replace.sh
 ```
 
-This script packages the app and installs it to `/Applications/MaccyZig.app`. MaccyZig installs alongside upstream Maccy — it never modifies `/Applications/Maccy.app` or the original Maccy data.
+该脚本会谨慎处理安装流程：
 
-## Developer CLI
+- 打包 App
+- 在可用时导入现有 Maccy 剪贴板历史
+- 备份已有的 `/Applications/MaccyZig.app`
+- 备份原 Maccy SQLite 数据和偏好设置
+- 在备份目录中写入 `restore.sh`
+- 安装并打开新 App
 
-Show help:
+备份路径：
+
+```text
+~/Backups/MaccyZig-YYYYMMDD-HHMMSS/
+```
+
+恢复旧版本：
+
+```sh
+~/Backups/MaccyZig-YYYYMMDD-HHMMSS/restore.sh
+```
+
+## 开发者 CLI
+
+查看帮助：
 
 ```sh
 ./zig-out/bin/maccy-zig --help
 ```
 
-Capture the current pasteboard once:
+捕获当前剪贴板一次：
 
 ```sh
 zig build run -- once
 ```
 
-Watch the pasteboard continuously:
+持续监听剪贴板：
 
 ```sh
 ./zig-out/bin/maccy-zig watch --max-blob-mib 4
 ```
 
-List stored history rows:
+列出历史条目：
 
 ```sh
 ./zig-out/bin/maccy-zig list
 ```
 
-Show storage statistics:
+查看存储统计：
 
 ```sh
 ./zig-out/bin/maccy-zig stats
 ```
 
-Use a custom database path:
+使用自定义数据库路径：
 
 ```sh
 ./zig-out/bin/maccy-zig watch --db /tmp/maccy-zig.sqlite
 ```
 
-Useful options:
+常用选项：
 
 ```text
---db PATH            SQLite path
---interval-ms N      Watch polling interval, default 500
---max-items N        Unpinned history cap, default 500
---max-blob-mib N     Skip individual pasteboard blobs above N MiB, default 16
---max-age-days N     Auto-delete unpinned items older than N days, default 0 = off
---no-images          Store text/html/rtf/file URLs only
+--db PATH            SQLite 路径
+--interval-ms N      watch 轮询间隔，默认 500
+--max-items N        未固定历史上限，默认 500
+--max-blob-mib N     跳过超过 N MiB 的单个剪贴板 blob，默认 16
+--max-age-days N     自动删除超过 N 天的未固定条目，默认 0 = 关闭
+--no-images          仅存储 text/html/rtf/文件 URL
 ```
 
-## Verification
+## 验证
 
-Run unit tests:
+运行单元测试：
 
 ```sh
 zig build test
 ```
 
-Smoke test the packaged app bundle:
+Smoke test 打包结果：
 
 ```sh
 ./scripts/smoke-package.sh
 ```
 
-Smoke test app launch:
+Smoke test 启动：
 
 ```sh
 ./scripts/smoke-bundle-launch.sh
 ```
 
-Generated verification artifacts are written to:
+验证产物会写入：
 
 ```text
 dist/verification/
 ```
 
-## Release Builds
+## Release 构建
 
-Release builds are created by GitHub Actions when a tag like `v0.1.0` is pushed, or when the `Release` workflow is run manually from the Actions tab.
+推送类似 `v0.1.0` 的 tag，或在 Actions 页面手动运行 `Release` workflow，都会触发 GitHub Actions 创建发布版本。
 
-Each release includes:
+CI 上没有签名证书，所以 release 包是显式以 ad-hoc 方式签名的（`CODESIGN_IDENTITY=-`）：首次打开需要按
+release notes 里的步骤放行，并且每次升级后都要重新授予一次辅助功能权限——原因见上面的
+「代码签名与辅助功能权限」。两个架构的最低系统版本都取自 `resources/Info.plist` 的
+`LSMinimumSystemVersion`，`scripts/smoke-package.sh` 会校验二进制和它一致。
+
+每个 release 会包含：
 
 - `MaccyZig-<tag>-macOS.zip`
 - `MaccyZig-<tag>-macOS.zip.sha256`
-- release notes with a small ASCII logo and install notes
+- 带小型 ASCII logo 和安装说明的 release notes
 
-## Project Layout
+## 项目结构
 
 ```text
 .
@@ -253,118 +264,123 @@ Each release includes:
     └── macos_paste.m
 ```
 
-## Data Storage
+## 数据存储
 
-Default database path:
+默认数据库路径：
 
 ```text
 ~/Library/Application Support/MaccyZig/Storage.sqlite
 ```
 
-The database uses WAL mode and stores metadata in `history_items` and pasteboard payloads in `history_contents`.
+数据库使用 WAL 模式，元数据存放在 `history_items`，剪贴板内容存放在 `history_contents`。
 
-## Permissions
+## 权限
 
-Like other clipboard managers, the app reads the system pasteboard. Pasting into other apps may require macOS Accessibility permissions depending on the paste path and target application.
+和其他剪贴板管理器一样，本应用会读取系统剪贴板。根据目标应用和粘贴路径，执行粘贴操作时可能需要 macOS 辅助功能权限。
 
-If paste actions do not work, open:
+如果粘贴动作不可用，请打开：
 
 ```text
-System Settings -> Privacy & Security -> Accessibility
+系统设置 -> 隐私与安全性 -> 辅助功能
 ```
 
-Then add or enable `MaccyZig.app`. If the checkbox is already ticked but paste
-still prompts, the app was ad-hoc signed — see
-[Code signing and Accessibility](#code-signing-and-accessibility).
+如果复选框已经勾选但粘贴仍然弹窗，说明 App 是 ad-hoc 签名的，参见「代码签名与
+辅助功能权限」。
 
-## Jev suggestions (optional, off by default)
+## Jev 智能推荐（可选，默认关闭）
 
-With *Settings → Suggestions* switched on, opening the panel asks
-[TypeSafe's Jev model](https://docs.typesafe.ai/) which history entry belongs in
-the app you are about to paste into, and preselects it. Jev answers with a typed
-choice over the candidate row ids, so the answer feeds the selection directly.
-The footer shows what it picked and how sure it was; *Actions… → Suggest what to
-paste (Jev)* is the same switch, for toggling without opening Settings.
+在「设置 → 智能推荐」中打开后，每次唤出面板都会让
+[TypeSafe 的 Jev 模型](https://docs.typesafe.ai/)判断：在你即将粘贴的那个应用里，
+历史记录中哪一条才是你想要的，并直接预选它。Jev 返回的是候选行 id 上的类型化
+choice，可以直接驱动选中逻辑。面板底部会显示选中了哪条以及置信度；
+「操作… → 用 Jev 推荐要粘贴的内容」是同一个开关，方便不打开设置就切换。
 
-Paste the TypeSafe API key into *Settings → Suggestions → TypeSafe API Key* and
-press **Save & Check**: the key is stored in the login keychain (device-only,
-never in NSUserDefaults and never in the repo), the field is cleared, and a
-round trip against the service confirms it works before you rely on it.
-Clearing the field and pressing Save removes the stored key.
+在「设置 → 智能推荐」那一行左侧选择通过哪个服务调用 Jev，把对应的 API key 粘贴进去并点击
+**保存并验证**：会先真实请求一次服务确认可用，通过后 key 才存进登录钥匙串（仅本机，不进
+NSUserDefaults，也不进仓库），输入框随即清空。每个服务各存各的 key，来回切换不用重填。
 
-What it is told about each entry, and how the answer is judged, is in
-[docs/jev-context.md](docs/jev-context.md) — including the measurements behind
-the acceptance rule.
+三种服务说的是同一套 TypeSafe 报文，区别只有地址、模型名和凭证：
 
-When Jev picks something the footer shows `✦ Jev picked · 98%`, and up to two
-also-rans get a faint `✦` next to their source app. A suggestion never moves
-the selection once you have started choosing yourself, and searching re-asks
-on the narrowed list instead of giving up. When it looks
-and declines, nothing is shown — the panel just keeps its normal top-of-history
-selection. Only failures you can act on (missing key, rejected key, service
-unreachable) get a footer message.
+| 服务 | 请求地址 | 模型名 | 用什么 key |
+| --- | --- | --- | --- |
+| TypeSafe（直连） | `https://api.typesafe.ai/v1/systemone` | `jev-latest` | TypeSafe API key |
+| Vercel AI Gateway | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `typesafe-ai/jev` | AI Gateway API key |
+| 自定义地址 | `<Base URL>/v1/systemone` | 默认 `jev-latest`，可改 | 上游服务要求的 key |
 
-What leaves the machine while it is on: previews of the top 12 visible entries
-(200 characters each), the app they were copied from, and the destination app,
-window title, focused field (400 characters) and the text on screen just above
-it (600 characters). Entries that look like
-credentials — `sk-…`, `ghp_…`, `AKIA…`, PEM blocks, `password = …`, JWTs — are
-dropped from the candidate set and never sent, and a focused field holding one
-is not echoed back. A pick is shown only when it beats the explicit "none of
-these" option and is clearly ahead of the runner-up; otherwise nothing moves.
+- **Vercel AI Gateway**：用的是它的
+  [TypeSafe 兼容接口](https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe)，不需要 TypeSafe 账号，
+  在 Vercel 控制台的 AI Gateway 里创建 API key 即可。Vercel 按 TypeSafe 的标价计费、不加价，每个团队
+  每月有免费额度，但免费额度只覆盖一部分模型——Jev 在不在其中以 Vercel 的
+  [Free Tier 模型列表](https://vercel.com/ai-gateway/models?freeTier=true)为准。
+- **Cloudflare AI Gateway**：选「自定义地址…」。先在 Cloudflare 的 AI Gateway 里建一个
+  [Custom Provider](https://developers.cloudflare.com/ai-gateway/configuration/custom-providers/)，
+  `base_url` 填 `https://api.typesafe.ai`，slug 比如 `typesafe`；然后 Base URL 填
+  `https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>/custom-typesafe`，API key 仍然填
+  TypeSafe 的 key（网关原样转发）。如果网关开了鉴权，把 `cf-aig-authorization` 和 `Bearer <token>` 填进
+  「附加请求头」，它的值同样存在钥匙串里。Cloudflare 的网关本身免费（日志、缓存、限流），但它只是
+  你自己 TypeSafe key 前面的一层代理，模型调用的费用仍由 TypeSafe 收取。
+- 自定义地址只接受 `https://`：API key 和剪贴板预览都经过这个地址。
 
-The destination is always described twice: by Accessibility (what the app says
-about the field) and by the screen (what you are looking at, in any app
-whatever it is built with). For the second, Jev reads a box of the window just
-above where the paste will land — caret, else the focused field, else the
-pointer — through ScreenCaptureKit and Vision: about 200ms, started while the
-panel is already waiting for rows, and only the lines nearest the paste are
-recognised and sent (600 characters at most, credential-shaped lines dropped).
-That needs Screen Recording, granted from *Settings → Shortcuts & Permissions*
-next to the Accessibility one.
-`maccy-zig ocr-check` times the path on your own machine. *Actions… → Log Jev
-Decisions* opens a live inspector window showing the last screen capture and,
-under it, every suggestion's destination context, the option sentences sent, the
-probabilities that came back, the accept/reject verdict and the stage timings.
-It stays open across launches while tracing is on, and writes nothing to disk. While it is
-on it also traces where each mouse-down in the app's own windows landed (window, view, whether the
-app was active), which is what a "this button does nothing" report needs; with tracing off no
-mouse monitor exists.
+按 `$0.042 / 百万输入 token`、每次打开面板约 2k token 估算，一次推荐约 $0.0001。
 
-Each candidate also says where it was copied from (window title and page or
-file, read at copy time while Jev is on), whether it was just pasted here, and
-whether it was gathered alongside something that was. Every paste leaves an
-evaluation sample; `maccy-zig jev-eval`, run from inside the app bundle, replays
-them against the current prompt and reports precision and wrong-row yanks, and
-`maccy-zig jev-context` prints what Jev is told about the focused field.
+发给 Jev 的每条候选带哪些上下文、结果怎么判定，见
+[docs/jev-context.md](docs/jev-context.md)，里面有判定规则的实测数据。
 
-Check the redaction and confidence logic offline:
+Jev 选中某条时，底部显示 `✦ Jev 选中 · 98%`，另有最多两条次优候选在来源应用前带一个
+淡 `✦`。你一旦自己开始选，迟到的建议就不会再抢走选中项；搜索过滤后会在更小的候选集上
+重新问一次，而不是直接放弃；它看过但没有把握时不显示任何东西，
+面板保持默认的置顶选中即可。只有你能处理的失败（缺 key、key 被拒、服务不可达）
+才会在底部提示。
+
+开启后会离开本机的数据：当前可见的前 12 条预览（每条 200 字符）、它们的来源
+应用，以及目标应用、窗口标题、聚焦输入框内容（400 字符）和它正上方的屏幕文字（600 字符）。形似凭证的条目
+（`sk-…`、`ghp_…`、`AKIA…`、PEM 私钥块、`password = …`、JWT）会直接从候选集中剔除，
+不会发送；聚焦输入框里如果是凭证也不会回传。只有当某条明显胜过「都不合适」
+选项、且明显领先第二名时才会显示推荐，否则选中行不动。
+
+目标位置始终从两个来源描述：辅助功能（应用自己对输入框的说明）和屏幕（你实际看到的内容，
+不管应用用什么技术栈写的）。后者通过 ScreenCaptureKit + Vision 读取粘贴落点正上方的一块窗口
+区域 —— 落点依次取光标、聚焦输入框、鼠标指针 —— 约 200ms，且是在面板本来就在等数据的那段
+时间里跑的；只识别并发送离落点最近的几行（最多 600 字符，形似凭证的行会被丢弃）。这需要
+「屏幕录制」权限，在「设置 → 快捷键与权限」里和辅助功能那一项并排授权。
+`maccy-zig ocr-check` 可以在你自己机器上量这条路径的耗时；「操作… → 查看 Jev 判断过程」
+会打开一个实时检查器窗口：上方显示最近一次屏幕捕获的原图，下方是每次推荐的目标上下文、
+发送的候选句子、返回的概率分布、接受或拒绝的判据和各段耗时。开着时重启也会自动回来，
+不写任何文件。开着时还会记录每次鼠标按下落在了本应用的哪个窗口、哪个视图、当时应用是否处于活动状态，
+排查「按钮点了没反应」就靠它；关闭时不存在任何鼠标监听。
+
+每条候选还会带上出处（复制那一刻的窗口标题和页面/文件，仅在 Jev 开启时采集）、是否刚在
+这里粘过、是否和刚粘过的条目是同一批复制的。每次粘贴都会留下一条评测样本；用 App 包内的
+二进制运行 `maccy-zig jev-eval`，可以把这些样本重放到当前的提问方式上，给出精度和「抢错行」
+次数；`maccy-zig jev-context` 会打印 Jev 在当前聚焦输入框上到底看到了什么。
+
+离线校验脱敏与置信度逻辑：
 
 ```sh
 ./zig-out/bin/maccy-zig jev-self-check
 ```
 
-Check that every control in the app's windows can actually be reached by a
-click. It builds the real Settings window and panel off screen, in both
-languages, and hit-tests points across each control the way AppKit does — no
-window is shown and nothing is clicked. `MZ_UI_SNAPSHOT_DIR=<dir>` also renders
-each window to a PNG there:
+校验各窗口里的每个控件是否真的点得到：在屏幕外构建真实的设置窗口和主面板（中英文各一遍），
+按 AppKit 自己的方式对每个控件上的多个点做 hit-test —— 不显示任何窗口，也不触发任何点击。
+加上 `MZ_UI_SNAPSHOT_DIR=<目录>` 还会把每个窗口渲染成 PNG 存到该目录：
 
 ```sh
 ./zig-out/bin/maccy-zig ui-self-check
 ```
 
-## Shipping Checklist
+然后添加或启用 `MaccyZig.app`。
 
-Before publishing a release on GitHub:
+## 发布检查清单
 
-- Run `zig build test`.
-- Run `./zig-out/bin/maccy-zig jev-self-check` and `./zig-out/bin/maccy-zig ui-self-check`.
-- Run `./scripts/smoke-package.sh`.
-- Run `./scripts/smoke-bundle-launch.sh`.
-- Verify the packaged app on a clean macOS account or machine.
-- Confirm the packaged bundle identifier is `io.github.chang1o1.MaccyZig` (separate from upstream Maccy so TCC permissions stay isolated).
+发布到 GitHub 前：
 
-## License
+- 运行 `zig build test`。
+- 运行 `./zig-out/bin/maccy-zig jev-self-check` 和 `./zig-out/bin/maccy-zig ui-self-check`。
+- 运行 `./scripts/smoke-package.sh`。
+- 运行 `./scripts/smoke-bundle-launch.sh`。
+- 在干净的 macOS 账号或机器上验证打包后的 App。
+- 确认打包产物的 bundle identifier 是 `io.github.chang1o1.MaccyZig`（与原版 Maccy 区分，确保 TCC 授权独立）。
 
-MaccyZig is available under the MIT License. See [LICENSE](LICENSE).
+## 许可证
+
+MaccyZig 使用 MIT License。详情见 [LICENSE](LICENSE)。
