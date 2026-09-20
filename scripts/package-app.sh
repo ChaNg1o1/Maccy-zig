@@ -61,20 +61,50 @@ sips -z 256 256 "$ICON_PNG" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
 sips -z 512 512 "$ICON_PNG" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
 sips -z 1024 1024 "$ICON_PNG" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
-  # magick menubar icon - optional
+sips -s format png -z 36 36 "$MENUBAR_SVG" --out "$MENUBAR_PNG" >/dev/null
 
+# --- Code signing -----------------------------------------------------------
+# TCC (Accessibility) remembers a grant by the app's *designated requirement*.
+# An ad-hoc signature has no certificate, so its designated requirement is a
+# bare `cdhash H"..."` that changes on every single rebuild. The old grant row
+# keeps showing a ticked "MaccyZig" in System Settings while AXIsProcessTrusted()
+# returns false for the new binary -- that is the "looks granted, still prompts
+# on every paste" bug. Signing with a certificate makes the requirement
+# `identifier "..." and ... certificate leaf[subject.CN] = "..."`, which is
+# stable across rebuilds, so the grant survives reinstalls.
+#
+# The identity is pinned, never guessed: picking "the first identity the
+# keychain happens to list" silently changes the designated requirement when the
+# keychain order changes, which breaks the grant again. Precedence:
+#   1. $CODESIGN_IDENTITY
+#   2. the .signing-identity file at the repo root (gitignored)
+# Ad-hoc is still reachable, but only by asking for it: CODESIGN_IDENTITY=-
 SIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
-if [ -z "$SIGN_IDENTITY" ]; then
-  SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F'\"' '/Developer ID Application:|Apple Development:/ { print $2; exit }')"
+if [ -z "$SIGN_IDENTITY" ] && [ -f .signing-identity ]; then
+  SIGN_IDENTITY="$(sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' .signing-identity | head -1)"
 fi
 if [ -z "$SIGN_IDENTITY" ]; then
-  SIGN_IDENTITY="-"
+  {
+    echo "error: no signing identity pinned."
+    echo "Write one of these into .signing-identity (or export CODESIGN_IDENTITY):"
+    security find-identity -v -p codesigning || true
+    echo
+    echo "Use CODESIGN_IDENTITY=- only for throwaway builds: an ad-hoc signature"
+    echo "invalidates the Accessibility grant on every rebuild."
+  } >&2
+  exit 1
 fi
-# Hardened runtime + timestamp keep the signature notarization-ready when a
-# real Developer ID identity is available; harmless for ad-hoc.
+
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
 if [ "$SIGN_IDENTITY" = "-" ]; then
-  codesign --force --deep --sign "$SIGN_IDENTITY" "$APP" >/dev/null
+  echo "warning: ad-hoc signing; the Accessibility grant will not survive this rebuild." >&2
+  codesign --force --identifier "$BUNDLE_ID" --sign - "$APP" >/dev/null
 else
-  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP" >/dev/null
+  # Hardened runtime + timestamp keep the signature notarization-ready when a
+  # real Developer ID identity is available.
+  codesign --force --options runtime --timestamp \
+    --identifier "$BUNDLE_ID" --sign "$SIGN_IDENTITY" "$APP" >/dev/null
 fi
+codesign --verify --strict "$APP"
+
 printf '%s\n' "$APP"

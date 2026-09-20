@@ -15,3 +15,6 @@ profile/
 autoresearch-state.json
 autoresearch-lessons.md
 research-results.tsv
+
+# Machine-local pinned codesigning identity
+.signing-identity
